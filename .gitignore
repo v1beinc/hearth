@@ -1,0 +1,24 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.uv/
+
+# Local renders, experiments and historical working notes
+out/
+PLAN.md
+AGENTS.md
+.agents/
+.codex/
+.idea/
+.vscode/
+
+# Local environment settings
+.env
+.env.*
+!.env.example
+Thumbs.db
+.DS_Store

@@ -1,0 +1,72 @@
+# Hearth — configuration. Every value is optional; delete a line to fall back
+# to the built-in default (see SHADERS in tools/render_still.py).
+#
+# Restart the app after editing: it reads this file at startup.
+
+[hearth]
+
+# "hearth" = the quiet cabin, "hearth2" = old stone room, "fire" = flame only.
+shader = "hearth"
+
+# Which display to open fullscreen on. 0 = primary, 1 = second.
+# Run `uv run hearth.py --monitor 99` to see the real list and the error.
+monitor = 1
+
+# Synchronize presentation with the monitor; app updates are capped at 30 Hz.
+vsync = true
+
+# --- flame ---
+# Overall brightness AND how far its light reaches the wall.
+# 0.6 = cosy and dim, 1.4 = roaring.
+uIntensity = 1.05
+
+# How fast it burns. 0.5 = slow and meditative, 2.0 = frantic.
+uSpeed = 1.00
+
+# Colour temperature. 0.0 = coal red, 1.0 = white hot.
+uWarmth = 0.50
+
+# Flame size.
+uScale = 1.00
+
+# Turbulence / domain warping. Lower = smooth and laminar.
+uDetail = 0.70
+
+# Rising sparks.
+uEmbers = 0.60
+
+# Ambient bounce, so unlit stone is dark grey rather than pure black.
+uRoom = 0.85
+
+# --- pixel-art style ---
+
+# Block size at 1080p, scaled automatically for other resolutions.
+# 6 = native 320x180 cabin; larger values deliberately coarsen the scene.
+uPixel = 6
+
+# Animation frames per second. This is a pixel-art sprite clock, NOT the
+# render rate — the app still renders smoothly, but the art advances in steps.
+# 8 = classic Terraria chunk, 12 = livelier, 24 = near-smooth.
+uFps = 12
+
+# Dithering between palette/light steps. 0 = hard bands, 1 = full checker.
+uDither = 0.20
+
+# Number of light bands and colour levels. FEWER = chunkier and more
+# retro. 4 = bold, 6 = balanced, 10 = almost smooth.
+uSteps = 12
+
+# Brick contrast. 0 = plain stone, 1 = strong mortar lines.
+uWall = 1.00
+
+# Coffee steam: 0 = off, 1 = visible gentle wisps.
+uSteam = 0.85
+
+# 0 = automatic weather, 1 = clear, 2 = snow, 3 = blizzard, 4 = cloudy.
+uWeather = 0
+
+# 1 = event showcase (faster calendar, more frequent visitors); 0 = quiet mode.
+uShowcase = 0
+
+# Set to 0 for a quiet room without creatures, cat or sleigh.
+uLife = 1

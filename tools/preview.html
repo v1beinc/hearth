@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hearth — тихий вечер</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+               font: 12px ui-monospace, Menlo, Consolas, monospace; color: #ddd; }
+  #gl { display: block; width: 100%; height: 100%; object-fit: contain;
+        image-rendering: pixelated; }
+  #hud { position: fixed; top: 0; left: 0; padding: 6px 8px; background: #000a;
+         white-space: pre-wrap; pointer-events: none; display: none; }
+  #controls { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+              display: flex; gap: 6px; padding: 8px; border: 1px solid #8c65444a;
+              border-radius: 10px; background: #181316e8; opacity: 0;
+              transition: opacity .3s; pointer-events: none; white-space: nowrap;
+              width: max-content; max-width: calc(100vw - 32px); flex-direction: column; }
+  #controls > div { display: flex; gap: 3px; justify-content: center; flex-wrap: wrap; }
+  body.awake #controls, #controls:focus-within { opacity: 1; pointer-events: auto; }
+  button { background: transparent; border: 1px solid transparent; border-radius: 6px;
+           color: #c0aa94; padding: 9px 10px; cursor: pointer; font: inherit; }
+  button:hover, button:focus-visible { color: #ffe4b1; border-color: #89633f; outline: none; }
+  button[aria-pressed="true"] { background: #503325; color: #ffe4b1; }
+  @media (max-width: 560px) { #controls { bottom: 12px; gap: 0; padding: 4px; }
+                              button { padding: 9px 6px; font-size: 11px; } }
+  #err { position: fixed; inset: 0; padding: 16px; background: #100; color: #f88;
+         white-space: pre-wrap; overflow: auto; font: 12px ui-monospace, monospace;
+         display: none; }
+  #clock { position: fixed; top: 18px; right: 20px; color: #c9b59b;
+           padding: 8px 12px; background: #181316d9; border-radius: 8px;
+           opacity: 0; transition: opacity .3s; pointer-events: none; }
+  body.awake #clock { opacity: 1; }
+  #help { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+          width: min(340px, calc(100vw - 64px)); padding: 22px; background: #21191aee;
+          border: 1px solid #89633f; border-radius: 12px; line-height: 1.9; }
+  #help[hidden] { display: none; }
+  #help strong { color: #ffe4b1; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud">booting…</div>
+<div id="err"></div>
+<div id="clock" aria-live="off"></div>
+<aside id="help" hidden aria-label="Помощь">
+  <strong>Тихий вечер</strong><br>
+  Space — пауза / продолжить<br>
+  1–4 — настроение<br>
+  F — полный экран<br>
+  W — погода<br>
+  E — просмотр событий<br>
+  R — вернуть настройки<br>
+  H — показать / скрыть помощь<br>
+  D — статистика<br>
+  <small>Часы на камине показывают время МСК.</small>
+</aside>
+<nav id="controls" aria-label="Настройки камина">
+  <div>
+  <button data-preset="1" aria-pressed="true">Вечер</button>
+  <button data-preset="2" aria-pressed="false">Тихая ночь</button>
+  <button data-preset="3" aria-pressed="false">Жаркий огонь</button>
+  <button data-preset="4" aria-pressed="false">Ретро</button>
+  </div>
+  <div>
+  <button id="pause" aria-label="Пауза">Ⅱ</button>
+  <button id="fullscreen" aria-label="На весь экран">⛶</button>
+  <button id="help-button" aria-label="Помощь">?</button>
+  <button id="weather" aria-label="Сменить погоду">Погода: авто</button>
+  <button id="events" aria-pressed="false">События</button>
+  </div>
+</nav>
+
+<script>
+// Host adapter for tuning in a browser. Mirrors what hearth.py does: inject
+// the Shadertoy uniforms, own main(), delegate to mainImage() in the shader.
+// If this file and the shader ever disagree about the contract, that is the
+// bug this harness exists to catch.
+// The shader declares its own u* uniforms, so they must appear exactly once in
+// the source handed to the driver. Repeating them would be a redefinition.
+//
+// Per-shader defaults must match tools/render_still.py SHADERS, which is the
+// single source of truth; test_preview_harness.py asserts they agree.
+const SHADERS = {
+  hearth: {
+    uIntensity: 1.05, uSpeed: 1.00, uWarmth: 0.50, uScale: 1.00,
+    uDetail: 0.70, uEmbers: 0.60, uRoom: 0.85, uPixel: 6.00,
+    uFps: 12.00, uDither: 0.20, uSteps: 12.00, uWall: 1.00, uSteam: 0.85,
+    uWeather: 0.00, uShowcase: 0.00, uLife: 1.00,
+  },
+  hearth2: {
+    uIntensity: 1.05, uSpeed: 1.00, uWarmth: 0.50, uScale: 1.00,
+    uDetail: 0.70, uEmbers: 0.60, uRoom: 0.75, uPixel: 6.00,
+    uFps: 12.00, uDither: 1.00, uSteps: 6.00, uWall: 1.00,
+  },
+  fire: {
+    uIntensity: 1.00, uSpeed: 1.00, uWarmth: 0.55, uScale: 1.00,
+    uDetail: 0.70, uEmbers: 0.60, uRoom: 0.75,
+  },
+};
+
+// Which shader to load is resolved BELOW, next to `params`. `params` is
+// declared further down with the canvas, so reading it from here would be a TDZ
+// error ("Cannot access 'params' before initialization") that kills the script
+// before main() ever runs. That failure is silent: no error box, no network
+// request, canvas left at its 300x150 default.
+//
+// Note for editors: keep these comments ASCII. They are parsed by Python's ast
+// in tests/test_preview_harness.py, and a non-ASCII character here fails that
+// parse with a confusing SyntaxError rather than anything about WebGL.
+
+const VERT = `
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+const PREAMBLE = `
+precision highp float;
+uniform vec3 iResolution;
+uniform float iTime;
+uniform float iTimeDelta;
+uniform int iFrame;
+uniform vec4 iMouse;
+uniform vec4 iDate;
+`;
+
+const EPILOGUE = `
+void main() {
+  vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
+  mainImage(c, gl_FragCoord.xy);
+  gl_FragColor = c;
+}
+`;
+
+const canvas = document.getElementById('gl');
+const hud = document.getElementById('hud');
+const errBox = document.getElementById('err');
+const params = new URLSearchParams(location.search);
+
+const FIXED_T = params.has('t') ? parseFloat(params.get('t')) : null;
+const SIZE = params.get('size');
+const clockLabel = document.getElementById('clock');
+const helpPanel = document.getElementById('help');
+function parseClock(text) {
+  if (!/^\d{2}:\d{2}(:\d{2})?$/.test(text)) fail('clock expects HH:MM[:SS]');
+  const [h, m, s = 0] = text.split(':').map(Number);
+  if (h > 23 || m > 59 || s > 59) fail('clock is outside 00:00:00..23:59:59');
+  return h * 3600 + m * 60 + s;
+}
+const FIXED_CLOCK = params.has('clock') ? parseClock(params.get('clock')) : (FIXED_T !== null ? 76500 : null);
+function clockDate() {
+  if (FIXED_CLOCK !== null) return [2026, 1, 1, FIXED_CLOCK];
+  const date = new Date(Date.now() + 3 * 3600000);
+  return [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(),
+          date.getUTCHours() * 3600 + date.getUTCMinutes() * 60 + date.getUTCSeconds()];
+}
+
+// Which shader to load: ?shader=hearth (default) or ?shader=fire.
+// Resolved here because `params` is only in scope from this point down.
+const ACTIVE = (params.get('shader') in SHADERS) ? params.get('shader') : 'hearth';
+const UNIFORM_DEFAULTS = SHADERS[ACTIVE];
+const STARTUP = { ...UNIFORM_DEFAULTS };
+const PRESETS = {
+  1: { uIntensity: 1.05, uWarmth: 0.50, uPixel: 6, uSpeed: 1.00, uRoom: 0.85, uSteps: 12, uDither: 0.20 },
+  2: { uIntensity: 0.75, uWarmth: 0.30, uPixel: 6, uSpeed: 0.70, uRoom: 0.65, uSteps: 12, uDither: 0.15 },
+  3: { uIntensity: 1.45, uWarmth: 0.75, uPixel: 6, uSpeed: 1.20, uRoom: 0.90, uSteps: 12, uDither: 0.20 },
+  4: { uIntensity: 1.05, uWarmth: 0.50, uPixel: 6, uSpeed: 1.00, uRoom: 0.85, uSteps: 6, uDither: 0.35 },
+};
+let paused = false, animationTime = 0, wakeTimer;
+const pauseButton = document.getElementById('pause');
+function togglePause() {
+  paused = !paused;
+  pauseButton.textContent = paused ? '\u25b6' : '\u2161';
+  pauseButton.setAttribute('aria-label', paused ? '\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c' : '\u041f\u0430\u0443\u0437\u0430');
+  pauseButton.setAttribute('aria-pressed', String(paused));
+}
+function preset(n) {
+  for (const [k, v] of Object.entries(PRESETS[n]))
+    if (k in UNIFORM_DEFAULTS) UNIFORM_DEFAULTS[k] = v;
+  document.querySelectorAll('[data-preset]').forEach(button =>
+    button.setAttribute('aria-pressed', String(button.dataset.preset === String(n))));
+}
+function wake() {
+  document.body.classList.add('awake');
+  clearTimeout(wakeTimer);
+  wakeTimer = setTimeout(() => document.body.classList.remove('awake'), 2600);
+}
+function toggleHelp() {
+  helpPanel.hidden = !helpPanel.hidden;
+  document.getElementById('help-button').setAttribute('aria-expanded', String(!helpPanel.hidden));
+}
+const WEATHER_NAMES = ['\u0430\u0432\u0442\u043e', '\u044f\u0441\u043d\u043e', '\u0441\u043d\u0435\u0433', '\u043c\u0435\u0442\u0435\u043b\u044c', '\u043e\u0431\u043b\u0430\u0447\u043d\u043e'];
+function weather() {
+  if (!('uWeather' in UNIFORM_DEFAULTS)) return;
+  UNIFORM_DEFAULTS.uWeather = (Math.round(UNIFORM_DEFAULTS.uWeather) + 1) % 5;
+  updateSceneButtons();
+}
+function events() {
+  if (!('uShowcase' in UNIFORM_DEFAULTS)) return;
+  UNIFORM_DEFAULTS.uShowcase = UNIFORM_DEFAULTS.uShowcase > 0.5 ? 0 : 1;
+  updateSceneButtons();
+}
+function updateSceneButtons() {
+  document.getElementById('weather').textContent = '\u041f\u043e\u0433\u043e\u0434\u0430: ' + WEATHER_NAMES[Math.round(UNIFORM_DEFAULTS.uWeather || 0)];
+  document.getElementById('events').setAttribute('aria-pressed', String(UNIFORM_DEFAULTS.uShowcase > 0.5));
+}
+async function fullscreen() {
+  if (document.fullscreenElement) await document.exitFullscreen();
+  else await document.documentElement.requestFullscreen();
+}
+document.querySelectorAll('[data-preset]').forEach(button =>
+  button.addEventListener('click', () => preset(Number(button.dataset.preset))));
+pauseButton.addEventListener('click', togglePause);
+document.getElementById('fullscreen').addEventListener('click', () => fullscreen().catch(console.warn));
+document.getElementById('help-button').addEventListener('click', toggleHelp);
+document.getElementById('weather').addEventListener('click', weather);
+document.getElementById('events').addEventListener('click', events);
+document.addEventListener('pointermove', wake);
+document.addEventListener('pointerdown', wake);
+document.addEventListener('keydown', event => {
+  wake();
+  if (event.code === 'Space' && event.target.tagName !== 'BUTTON') { event.preventDefault(); togglePause(); }
+  if (/^[1-4]$/.test(event.key)) preset(Number(event.key));
+  if (event.key.toLowerCase() === 'h' || event.key === '?') toggleHelp();
+  if (event.key.toLowerCase() === 'd') hud.style.display = hud.style.display === 'block' ? 'none' : 'block';
+  if (event.key.toLowerCase() === 'f') fullscreen().catch(console.warn);
+  if (event.key.toLowerCase() === 'w') weather();
+  if (event.key.toLowerCase() === 'e') events();
+  if (event.key.toLowerCase() === 'r') {
+    Object.assign(UNIFORM_DEFAULTS, STARTUP);
+    updateSceneButtons();
+    document.querySelectorAll('[data-preset]').forEach(button => button.setAttribute('aria-pressed', 'false'));
+  }
+  if (event.key === 'Escape') {
+    helpPanel.hidden = true;
+    document.getElementById('help-button').setAttribute('aria-expanded', 'false');
+  }
+});
+if (params.has('debug')) hud.style.display = 'block';
+
+function fail(msg) {
+  errBox.style.display = 'block';
+  errBox.textContent = msg;
+  hud.textContent = 'ERROR';
+  window.__fireError = msg;
+  throw new Error(msg);
+}
+
+function compile(gl, type, src, label) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(sh) || '';
+    const numbered = src.split('\n').map((l, i) => String(i + 1).padStart(4) + '| ' + l);
+    // show a window around the first reported line
+    const m = log.match(/(\d+):(\d+)/);
+    let ctx = '';
+    if (m) {
+      const ln = parseInt(m[2], 10);
+      ctx = numbered.slice(Math.max(0, ln - 8), ln + 5).join('\n');
+    }
+    fail(`${label} compile failed:\n${log}\n\ncontext:\n${ctx}`);
+  }
+  return sh;
+}
+
+async function main() {
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const [w, h] = SIZE ? SIZE.split('x').map(Number) :
+      [Math.round(window.innerWidth * ratio), Math.round(window.innerHeight * ratio)];
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) fail('size expects positive WxH');
+    canvas.width = w; canvas.height = h;
+  }
+  resize();
+  if (!SIZE) window.addEventListener('resize', resize);
+
+  const gl = canvas.getContext('webgl', { antialias: false, alpha: false,
+                                         preserveDrawingBuffer: true })
+          || canvas.getContext('experimental-webgl');
+  if (!gl) fail('WebGL unavailable in this context.');
+
+  // The host prepends the Shadertoy uniforms and appends a main() that calls
+  // mainImage(). The shader keeps its own u* uniform declarations, so this
+  // must NOT strip them: that would silently unbind every slider.
+  const res = await fetch(`../shaders/${ACTIVE}.frag`, { cache: 'no-store' });
+  if (!res.ok) fail(`cannot fetch ${ACTIVE}.frag: HTTP ${res.status}`);
+  const body = await res.text();
+  if (!/void\s+mainImage\s*\(/.test(body))
+    fail(`${ACTIVE}.frag lost its mainImage() contract`);
+
+  // Every uniform we are about to bind must actually be declared by this
+  // shader, or a slider would silently do nothing.
+  for (const name of Object.keys(UNIFORM_DEFAULTS)) {
+    if (!new RegExp(`uniform\\s+\\w+\\s+${name}\\s*;`).test(body))
+      fail(`${ACTIVE}.frag does not declare ${name}`);
+  }
+
+  const vs = compile(gl, gl.VERTEX_SHADER, VERT, 'vertex');
+  const fs = compile(gl, gl.FRAGMENT_SHADER,
+                     PREAMBLE + body + EPILOGUE, 'fragment');
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+    fail('link failed: ' + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER,
+                new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  for (const name of Object.keys(UNIFORM_DEFAULTS)) {
+    U[name] = gl.getUniformLocation(prog, name);
+    if (!U[name]) fail(`uniform ${name} not found in compiled program`);
+  }
+  const Ures = gl.getUniformLocation(prog, 'iResolution');
+  const Ut = gl.getUniformLocation(prog, 'iTime');
+  const Udt = gl.getUniformLocation(prog, 'iTimeDelta');
+  const Ufr = gl.getUniformLocation(prog, 'iFrame');
+  const Um = gl.getUniformLocation(prog, 'iMouse');
+  const Udate = gl.getUniformLocation(prog, 'iDate');
+
+  // uniform overrides via query string, e.g. ?uIntensity=0.4&uWarmth=0.9
+  for (const k of Object.keys(UNIFORM_DEFAULTS))
+    if (params.has(k)) UNIFORM_DEFAULTS[k] = parseFloat(params.get(k));
+  Object.assign(STARTUP, UNIFORM_DEFAULTS);
+  updateSceneButtons();
+
+  window.__setUniform = (k, v) => { UNIFORM_DEFAULTS[k] = v; };
+
+  // --- single explicit draw at a given iTime, fully flushed -------------
+  // Deterministic: identical iTime gives an identical frame, which is what
+  // makes tools/render_still.py and tests/ meaningful.
+  window.__renderAt = (t) => {
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform3f(Ures, canvas.width, canvas.height, 1.0);
+    gl.uniform1f(Ut, t);
+    gl.uniform1f(Udt, 0.0);
+    gl.uniform1i(Ufr, 0);
+    gl.uniform4f(Um, 0.0, 0.0, 0.0, 0.0);
+    gl.uniform4fv(Udate, clockDate());
+    for (const k of Object.keys(UNIFORM_DEFAULTS))
+      gl.uniform1f(U[k], UNIFORM_DEFAULTS[k]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.finish();
+  };
+
+  // --- pixel statistics: is anything actually being drawn? --------------
+  window.__stats = () => {
+    const w = canvas.width, h = canvas.height;
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let sr = 0, sg = 0, sb = 0, lit = 0, n = w * h, maxv = 0;
+    for (let i = 0; i < n; i++) {
+      const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+      sr += r; sg += g; sb += b;
+      const v = Math.max(r, g, b);
+      if (v > maxv) maxv = v;
+      if (v > 12) lit++;
+    }
+    return { w, h, meanR: sr / n, meanG: sg / n, meanB: sb / n,
+             litFraction: lit / n, maxChannel: maxv };
+  };
+
+  // --- honest frame-cost measurement ------------------------------------
+  // The rAF/timer numbers above are worthless in a hidden tab, so time raw
+  // draws with gl.finish() around them. This is CPU-submit + GPU-execute
+  // cost, which is what we actually care about for "will this hold 60fps".
+  window.__bench = (n = 60, warmup = 10) => {
+    for (let i = 0; i < warmup; i++) window.__renderAt(i * 0.016);
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) window.__renderAt(i * 0.016);
+    gl.finish();
+    const ms = (performance.now() - t0) / n;
+    return { frames: n, msPerFrame: ms, fps: 1000 / ms };
+  };
+
+  let frame = 0, last = performance.now(), fpsAcc = 0, fpsN = 0, fpsShown = 0;
+
+  // Driver. rAF is suspended entirely while document.hidden (background tab,
+  // headless capture), which would make this harness look broken when it is
+  // fine. Fall back to a timer whenever the page is not visible, and prefer
+  // rAF when it is, so we measure real vsync behaviour in a visible window.
+  function schedule(fn) {
+    if (document.visibilityState === 'hidden') setTimeout(() => fn(performance.now()), 4);
+    else requestAnimationFrame(fn);
+  }
+
+  function draw(now) {
+    const dt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+
+    if (!paused) animationTime += dt;
+    const t = FIXED_T !== null ? FIXED_T : animationTime;
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform3f(Ures, canvas.width, canvas.height, 1.0);
+    gl.uniform1f(Ut, t);
+    gl.uniform1f(Udt, dt);
+    gl.uniform1i(Ufr, frame);
+    gl.uniform4f(Um, 0.0, 0.0, 0.0, 0.0);
+    const date = clockDate();
+    gl.uniform4fv(Udate, date);
+    const hh = String(Math.floor(date[3] / 3600)).padStart(2, '0');
+    const mm = String(Math.floor(date[3] / 60) % 60).padStart(2, '0');
+    clockLabel.textContent = hh + ':' + mm + ' \u041c\u0421\u041a';
+    for (const k of Object.keys(UNIFORM_DEFAULTS))
+      gl.uniform1f(U[k], UNIFORM_DEFAULTS[k]);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    frame++;
+    fpsAcc += dt; fpsN++;
+    if (fpsAcc >= 0.5) {
+      fpsShown = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0;
+      hud.textContent =
+        `fps ${fpsShown.toFixed(1)}  frame ${frame}  ${canvas.width}x${canvas.height}  t ${t.toFixed(2)}\n` +
+        Object.entries(UNIFORM_DEFAULTS).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' ');
+    }
+
+    // Exposed so tests/automation can read stats without scraping the HUD.
+    window.__fps = fpsShown;
+    window.__frames = frame;
+    window.__ready = true;
+    window.__driver = document.visibilityState === 'hidden' ? 'timer' : 'raf';
+    schedule(draw);
+  }
+  schedule(draw);
+}
+
+main().catch(e => { if (!window.__fireError) fail(String(e && e.message || e)); });
+</script>
+</body>
+</html>
