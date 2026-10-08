@@ -70,3 +70,7 @@ uShowcase = 0
 
 # Set to 0 for a quiet room without creatures, cat or sleigh.
 uLife = 1
+
+# 0 = live Moscow daylight, 1 = night, 2 = dawn, 3 = day, 4 = sunset.
+# Night remains the default; press T to explore the other atmospheres.
+uDayMode = 1

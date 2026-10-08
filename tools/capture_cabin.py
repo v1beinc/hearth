@@ -91,6 +91,18 @@ def main():
             sheet.paste(frame, (x, y + 22))
             draw.text((x + 8, y + 5), name, fill=(220, 197, 158))
         sheet.save(out / "living-cabin-sheet.png")
+        day_sheet = Image.new("RGB", (960, 584), (20, 16, 20))
+        draw = ImageDraw.Draw(day_sheet)
+        for k, (name, mode, hour) in enumerate([
+            ("NIGHT", 1, 21.25), ("DAWN", 2, 7.5),
+            ("DAY", 3, 12), ("SUNSET", 4, 18.5),
+        ]):
+            frame = renderer.draw(55, clock_seconds=hour * 3600, uDayMode=mode,
+                                  uWeather=1).resize((480, 270), Image.Resampling.NEAREST)
+            x, y = k % 2 * 480, k // 2 * 292
+            day_sheet.paste(frame, (x, y + 22))
+            draw.text((x + 8, y + 5), name, fill=(220, 197, 158))
+        day_sheet.save(out / "daylight.png")
     finally:
         renderer.close()
 

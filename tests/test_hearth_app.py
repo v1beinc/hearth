@@ -43,6 +43,10 @@ def run(args, timeout=300):
 
 
 EVENT_LOOP_CHECK = r'''
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["moderngl>=5.12", "pyglet>=2.0", "numpy>=1.26", "pillow>=10.0"]
+# ///
 """Run the app's REAL main() through a real event loop, then read the pixels.
 
 The user hit a black screen from `uv run hearth.py --monitor 1`. Root cause:
@@ -72,6 +76,25 @@ sys.argv = ["hearth.py", "--windowed", "480x270"]
 
 capture = {"done": False, "error": None}
 
+Original = hearth.Hearth
+class Observed(Original):
+    def on_draw(self, draw_overlay=True):
+        super().on_draw(draw_overlay)
+        if self.sound.hidden:
+            return
+        # Capture what the registered handler painted BEFORE presentation.
+        # A swapped back buffer is undefined, especially in resizable windows.
+        w, h = self.window.get_framebuffer_size()
+        gl = pyglet.gl
+        gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
+        gl.glReadBuffer(gl.GL_BACK)
+        gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+        data = (gl.GLubyte * (w * h * 3))()
+        gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, data)
+        capture['image'] = Image.frombytes('RGB', (w, h), bytes(data))
+
+hearth.Hearth = Observed
+
 
 def watchdog(dt):
     """Scheduled INSIDE main()'s event loop, so the window is alive and its
@@ -88,17 +111,15 @@ def watchdog(dt):
         return
     w = wins[0]
     try:
-        # moderngl.get_context(), not w.context: pyglet's window.context is its
-        # own Win32ARBContext object with no .screen. The GL front buffer is
-        # moderngl's `screen` framebuffer for the current thread's context.
-        ctx = moderngl.get_context()
-        data = ctx.screen.read(components=3, alignment=1)
-        img = Image.frombytes("RGB", (w.width, w.height), data)
+        assert 'image' in capture, 'registered on_draw handler never painted'
+        img = capture['image']
         img.transpose(Image.FLIP_TOP_BOTTOM).save(OUT)
         capture["done"] = True
     except Exception as e:
         capture["error"] = f"readback failed: {e}"
     finally:
+        for window in list(pyglet.app.windows):
+            window.close()
         pyglet.app.exit()
 
 

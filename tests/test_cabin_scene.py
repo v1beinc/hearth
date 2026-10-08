@@ -29,6 +29,32 @@ def test_every_cabin_control_is_active(scene):
     assert set(SHADERS["hearth"]) <= set(scene.program)
 
 
+def test_live_daylight_follows_wall_time_during_a_frozen_scene(scene):
+    night = pixels(scene, 55, uDayMode=0, clock_seconds=0)
+    noon = pixels(scene, 55, uDayMode=0, clock_seconds=12 * 3600)
+    # Identical clock hands at midnight/noon isolate daylight from the clock.
+    assert not np.array_equal(night, noon)
+    sky = np.s_[39:63, 35:59]
+    assert noon[sky].mean() > night[sky].mean() * 1.5
+    assert np.array_equal(night, pixels(scene, 55, uDayMode=1, clock_seconds=0))
+    assert np.array_equal(noon, pixels(scene, 55, uDayMode=3, clock_seconds=12 * 3600))
+
+
+def test_twilight_is_warm_and_daylight_changes_smoothly(scene):
+    dawn = pixels(scene, 55, uDayMode=2, uWeather=1)
+    sunset = pixels(scene, 55, uDayMode=4, uWeather=1)
+    assert not np.array_equal(dawn, sunset)
+    before = pixels(scene, 55, uDayMode=0, clock_seconds=7 * 3600)
+    after = pixels(scene, 55, uDayMode=0, clock_seconds=7 * 3600 + 1)
+    assert np.abs(before - after).mean() < 0.2
+
+
+def test_sleigh_only_crosses_the_night_sky(scene):
+    with_life = pixels(scene, 4.8, uDayMode=3, uShowcase=1, uWeather=1, uLife=1)
+    without = pixels(scene, 4.8, uDayMode=3, uShowcase=1, uWeather=1, uLife=0)
+    assert np.array_equal(with_life[39:63, 35:88], without[39:63, 35:88])
+
+
 def test_quantized_clock_and_pause(scene):
     assert np.array_equal(pixels(scene, 12.0), pixels(scene, 12.04))
     assert np.array_equal(pixels(scene, 12.0, uSpeed=0), pixels(scene, 34.0, uSpeed=0))

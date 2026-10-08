@@ -31,6 +31,10 @@ Controls (fullscreen is borderless, so there is no title bar to click):
     H / F1         show / hide help
     W              cycle weather (including automatic)
     E              toggle event showcase
+    T              night / dawn / day / sunset / Moscow daylight
+    M              sound off / fire and wind / original lofi
+    9 / 0          sound volume down / up
+    Y              open the linked YouTube mix with playback controls
 
 Settings come from hearth.toml next to this file; CLI flags override it.
 """
@@ -93,8 +97,12 @@ LAUNCHER_KEYS = {"shader", "monitor", "vsync"}
 # its tools and shader directory, so a missing file should be reported clearly.
 from tools.render_still import SHADERS
 from tools.scene_clock import moscow_i_date
+from tools.ambient_sound import AmbientSound
+from tools.music_page import MusicPage
 
 WEATHER_NAMES = ("Авто", "Ясно", "Снег", "Метель", "Облачно")
+DAY_NAMES = ("По времени МСК", "Ночь", "Рассвет", "День", "Закат")
+SOUND_NAMES = ("Выключен", "Камин и ветер", "Камин + lofi")
 PRESET_NAMES = {1: "Вечер", 2: "Тихая ночь", 3: "Жаркий огонь", 4: "Ретро"}
 
 # Which knobs the arrow-style keys move, and by how much per press.
@@ -158,12 +166,13 @@ class Hearth:
             self.window = pyglet.window.Window(screen.width, screen.height,
                                                caption="hearth",
                                                vsync=vsync, fullscreen=True,
-                                               screen=screen)
+                                               screen=screen, resizable=True)
         else:
             w, h = (int(v) for v in windowed.lower().split("x"))
             self.window = pyglet.window.Window(w, h, caption="hearth",
-                                               vsync=vsync)
+                                               vsync=vsync, resizable=True)
 
+        self.window.switch_to()
         # moderngl 5.12 changed create_context() to take everything except
         # `require` as keyword settings; passing the window positionally now
         # lands it in `require` and raises a TypeError. Try the modern form
@@ -191,6 +200,8 @@ class Hearth:
         self._last = self.start
         self.elapsed = 0.0
         self.paused = False
+        self.sound = AmbientSound(ROOT / "assets" / "audio")
+        self.music_page = MusicPage()
         self._closed = False
         self.shader = shader
         self.shots = 0
@@ -201,15 +212,16 @@ class Hearth:
         self.initial_preset_name = self.preset_name
         self.last_caption = ""
         self.notice_until = self.start + 5.0
-        self.notice = pyglet.text.Label("H — помощь   ·   Space — пауза   ·   E — события",
+        self.notice = pyglet.text.Label("H — помощь   ·   M — звук   ·   Y — YouTube",
                                        font_name="Segoe UI", font_size=12,
                                        color=(239, 210, 173, 255), anchor_x="center", y=22)
-        self.help_background = pyglet.shapes.Rectangle(12, 12, 425, 240, color=(27, 20, 22))
+        self.help_background = pyglet.shapes.Rectangle(12, 12, 425, 310, color=(27, 20, 22))
         self.help_background.opacity = 230
         self.help_label = pyglet.text.Label(
-            "Тихий вечер\n\n1–4   Настроение\nSpace   Пауза / продолжить\nW   Погода\nE   Редкие события: просмотр\n[ / ]   Скорость     - / =   Свет\nF   Полный экран     S   Снимок\nR   Сброс     H   Скрыть помощь\nEsc / Q   Выход",
+            "Тихий вечер\n\n1–4   Настроение\nSpace   Пауза / продолжить\nW   Погода     T   Время суток\nE   Редкие события: просмотр\nM   Звук     9 / 0   Громкость\nY   YouTube: музыка и перемотка\n[ / ]   Скорость     - / =   Свет\nF   Полный экран     S   Снимок\nR   Сброс     H   Скрыть помощь\nEsc / Q   Выход",
             font_name="Segoe UI", font_size=12, color=(239, 210, 173, 255),
             x=26, y=235, anchor_y="top", multiline=True, width=395)
+        self._help_size = None
 
     def notify(self, text: str) -> None:
         self.notice.text = text
@@ -218,6 +230,7 @@ class Hearth:
 
     def toggle_pause(self) -> None:
         self.paused = not self.paused
+        self.update_sound()
         self.notify("Пауза · часы продолжают идти" if self.paused else "Продолжаем")
 
     def cycle_weather(self) -> None:
@@ -225,6 +238,52 @@ class Hearth:
             weather = (int(self.values["uWeather"]) + 1) % 5
             self.values["uWeather"] = float(weather)
             self.notify("Погода: " + WEATHER_NAMES[weather])
+
+    def cycle_day(self) -> None:
+        if "uDayMode" in self.values:
+            mode = (int(self.values["uDayMode"]) + 1) % 5
+            self.values["uDayMode"] = float(mode)
+            self.notify("Время суток: " + DAY_NAMES[mode])
+
+    def update_sound(self) -> None:
+        self.sound.paused = self.paused
+        self.sound.update(int(self.values.get("uWeather", 0)))
+
+    def cycle_sound(self) -> None:
+        try:
+            self.sound.set_mode(self.sound.mode + 1)
+            self.update_sound()
+            self.notify("Звук: " + SOUND_NAMES[self.sound.mode])
+        except Exception as exc:
+            self.sound.close()
+            print(f"audio unavailable: {exc}", file=sys.stderr)
+            self.notify("Не удалось включить звук")
+
+    def change_volume(self, delta: float) -> None:
+        self.sound.volume = min(1.0, max(0.0, self.sound.volume + delta))
+        self.update_sound()
+        self.notify(f"Громкость: {round(self.sound.volume * 100)}%")
+
+    def open_music(self) -> None:
+        # Avoid two music tracks playing together; fire and wind can continue.
+        if self.sound.mode == 2:
+            self.sound.set_mode(1)
+            self.update_sound()
+        try:
+            self.music_page.open()
+            self.notify("YouTube-плеер открыт в браузере")
+        except OSError as exc:
+            print(f"music page unavailable: {exc}", file=sys.stderr)
+            self.notify("Не удалось открыть плеер")
+
+    def on_hide(self) -> None:
+        self.sound.hidden = True
+        self.update_sound()
+
+    def on_show(self) -> None:
+        self.sound.hidden = False
+        self._last = time.perf_counter()
+        self.update_sound()
 
     def toggle_showcase(self) -> None:
         if "uShowcase" in self.values:
@@ -257,6 +316,9 @@ class Hearth:
         after on_draw returns. Flipping manually as well leaves the buffer
         undefined at the wrong moment.
         """
+        if self.sound.hidden:
+            return
+        self.window.switch_to()
         now = time.perf_counter()
         elapsed = now - self._last
         dt = min(elapsed, 0.1)
@@ -265,6 +327,7 @@ class Hearth:
             self.elapsed += elapsed
         t = self.elapsed
         date = moscow_i_date()
+        self.update_sound()
         caption = f"Hearth — {self.preset_name} · {int(date[3]) // 3600:02}:{int(date[3]) // 60 % 60:02} МСК"
         if caption != self.last_caption:
             self.window.set_caption(caption)
@@ -289,6 +352,15 @@ class Hearth:
         self.vao.render(GL_TRIANGLES)
         if draw_overlay:
             if self.help_visible:
+                size = (self.window.width, self.window.height)
+                if size != self._help_size:
+                    width, height = min(425, max(100, size[0] - 24)), min(310, max(100, size[1] - 24))
+                    self.help_background.width = width
+                    self.help_background.height = height
+                    self.help_label.width = width - 28
+                    self.help_label.y = height - 3
+                    self.help_label.font_size = 12 if width >= 395 and height >= 290 else 9 if height >= 230 else 7
+                    self._help_size = size
                 self.help_background.draw()
                 self.help_label.draw()
             elif now < self.notice_until:
@@ -308,23 +380,33 @@ class Hearth:
     def save_png(self) -> Path:
         """Draw and read the back buffer before presentation, then save a PNG.
 
-        Reads ctx.screen (the default framebuffer) before a buffer swap,
-        flipped back because GL's origin is
-        bottom-left and PNG's is top-left.
+        Reads the window before a buffer swap. The image is flipped because
+        GL's origin is bottom-left and PNG's is top-left.
         """
         self.on_draw(draw_overlay=False)
-        w, h = self.window.get_framebuffer_size()
-        # ModernGL caches the default framebuffer's initial dimensions.
-        # Read the current extent explicitly after a resize/fullscreen change.
-        data = self.ctx.screen.read(viewport=(0, 0, w, h), components=3, alignment=1)
-        img = Image.frombytes("RGB", (w, h), data).transpose(
-            Image.FLIP_TOP_BOTTOM)
+        img = self.framebuffer_image()
         stamp = time.strftime("%Y%m%d_%H%M%S")
         out = ROOT / "out" / f"hearth_{stamp}_{time.time_ns() % 1000000:06d}.png"
         out.parent.mkdir(parents=True, exist_ok=True)
         img.save(out)
         self.shots += 1
         return out
+
+    def framebuffer_image(self) -> Image.Image:
+        """Read the live window back buffer without ModernGL's cached GL state.
+
+        Pyglet's text overlay also changes GL bindings. Explicit native readback
+        avoids stale dimensions/bindings and reads before the buffer is swapped.
+        """
+        self.window.switch_to()
+        w, h = self.window.get_framebuffer_size()
+        gl = pyglet.gl
+        gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
+        gl.glReadBuffer(gl.GL_BACK)
+        gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+        data = (gl.GLubyte * (w * h * 3))()
+        gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, data)
+        return Image.frombytes("RGB", (w, h), bytes(data)).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
     def apply_preset(self, n: int) -> None:
         for k, v in PRESETS[n].items():
@@ -347,6 +429,8 @@ class Hearth:
         if self._closed:
             return
         self._closed = True
+        self.sound.close()
+        self.music_page.close()
         for overlay in (self.notice, self.help_label, self.help_background):
             overlay.delete()
         for obj in (self.vao, self.vbo, self.program):
@@ -421,10 +505,7 @@ def main() -> int:
             out = Path(args.save)
             out.parent.mkdir(parents=True, exist_ok=True)
             app.on_draw(draw_overlay=False)
-            w, h = app.window.get_framebuffer_size()
-            data = app.ctx.screen.read(viewport=(0, 0, w, h), components=3, alignment=1)
-            Image.frombytes("RGB", (w, h), data).transpose(
-                Image.FLIP_TOP_BOTTOM).save(out)
+            app.framebuffer_image().save(out)
             print(f"saved {out}")
         app.close()
         return 0
@@ -451,9 +532,22 @@ def main() -> int:
             app.cycle_weather()
         elif symbol == K.E:
             app.toggle_showcase()
+        elif symbol == K.T:
+            app.cycle_day()
+        elif symbol == K.M:
+            app.cycle_sound()
+        elif symbol == K.Y:
+            app.open_music()
+        elif symbol == K.NUM_9:
+            app.change_volume(-0.05)
+        elif symbol == K.NUM_0:
+            app.change_volume(0.05)
         elif symbol == K.R:
             app.values.update(app.initial_values)
             app.preset_name = app.initial_preset_name
+            app.sound.set_mode(0)
+            app.sound.volume = 0.35
+            app.update_sound()
             app.notify("Настройки восстановлены")
         elif symbol == K.S:
             saved = app.save_png()
@@ -484,7 +578,7 @@ def main() -> int:
     print(f"display  : {app.window.width}x{app.window.height} "
           f"(index {monitor})")
     print("F fullscreen | Q/Esc quit | [ ] speed | - = intensity | , . pixel "
-          "| 1-4 presets | Space pause | W weather | E events | H help | R reset | S save")
+          "| 1-4 presets | Space pause | W weather | T daylight | M sound | 9/0 volume | Y YouTube | E events | H help | R reset | S save")
     print(f"settings : {args.config if args.config.exists() else '(defaults)'}")
 
     # pyglet derives the event name from the attribute name, so this must be
@@ -492,6 +586,7 @@ def main() -> int:
     # EventException: Unknown event "draw" and the window stays black.
     app.window.push_handlers(app.on_draw)
     app.window.push_handlers(app.on_mouse_motion)
+    app.window.push_handlers(app.on_hide, app.on_show)
 
     def on_close():
         app.close()

@@ -66,6 +66,7 @@ SHADERS: dict[str, dict[str, float]] = {
         "uWeather": 0.00,
         "uShowcase": 0.00,
         "uLife": 1.00,
+        "uDayMode": 1.00,
     },
     # Rewritten scene: dark room with a firebox cut into it, palette-ramp
     # colour. Kept alongside `hearth` so the two can be compared side by side

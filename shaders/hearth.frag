@@ -18,6 +18,21 @@ uniform float uSteam;
 uniform float uWeather;
 uniform float uShowcase;
 uniform float uLife;
+uniform float uDayMode;
+
+// The host's Moscow wall clock keeps daylight independent of animation pause.
+// x = daylight, y = warm twilight; mode 1 preserves the original quiet night.
+vec2 daylight() {
+    if (uDayMode > 3.5) return vec2(0.32, 0.95);
+    if (uDayMode > 2.5) return vec2(1.0, 0.0);
+    if (uDayMode > 1.5) return vec2(0.40, 0.70);
+    if (uDayMode > 0.5) return vec2(0.0);
+    float hour = mod(iDate.w, 86400.0) / 3600.0;
+    float rise = smoothstep(6.5, 9.0, hour);
+    float fall = smoothstep(17.0, 20.0, hour);
+    return vec2(rise * (1.0 - fall),
+                4.0 * (rise * (1.0 - rise) + fall * (1.0 - fall)));
+}
 
 float hash1(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -234,11 +249,17 @@ void sleigh(inout vec3 c, vec2 p, float t, float clouds) {
 vec3 outside(vec2 p, float t) {
     float world = worldTime(t);
     vec3 weather = weatherState(world);
-    vec3 c = mix(vec3(0.105, 0.19, 0.30), vec3(0.055, 0.09, 0.19), clamp((p.y - 85.0) / 58.0, 0.0, 1.0));
+    vec2 light = daylight();
+    float night = 1.0 - smoothstep(0.02, 0.35, light.x);
+    float height = clamp((p.y - 85.0) / 58.0, 0.0, 1.0);
+    vec3 sky = mix(vec3(0.105, 0.19, 0.30), vec3(0.055, 0.09, 0.19), height);
+    vec3 daySky = mix(vec3(0.65, 0.76, 0.78), vec3(0.30, 0.51, 0.69), height);
+    vec3 c = mix(sky, daySky, light.x);
+    c = mix(c, mix(vec3(0.86, 0.43, 0.27), vec3(0.39, 0.29, 0.43), height), light.y * 0.90);
     vec2 stars = floor(p / 3.0);
     float star = step(0.975, hash1(stars)) * box(mod(p, 3.0), vec4(0.0, 0.0, 1.0, 1.0));
-    c += vec3(0.30, 0.36, 0.41) * star * (0.7 + 0.3 * sin(t * 0.5 + stars.x));
-    float moon = disc(p, vec2(73.0, 129.0), 7.0);
+    c += vec3(0.30, 0.36, 0.41) * star * (0.7 + 0.3 * sin(t * 0.5 + stars.x)) * night;
+    float moon = disc(p, vec2(73.0, 129.0), 7.0) * night;
     c = mix(c, vec3(0.76, 0.83, 0.78), moon);
     c = mix(c, vec3(0.56, 0.67, 0.69), moon * disc(p, vec2(75.0, 127.0), 2.5));
     // A fictional lunar calendar: a full moon once every eight quiet nights.
@@ -247,23 +268,25 @@ vec3 outside(vec2 p, float t) {
         float offset = mix(-4.0, 4.0, step(4.0, phase));
         c = mix(c, vec3(0.065, 0.105, 0.205), moon * disc(p, vec2(73.0 + offset, 129.0), 6.5));
     }
+    float sun = disc(p, vec2(73.0, mix(118.0, 132.0, light.x)), 5.0);
+    c = mix(c, vec3(1.0, 0.84, 0.56), sun * smoothstep(0.08, 0.30, light.x));
     float clouds = noise(vec2(p.x * 0.065 + world * 0.004, p.y * 0.13)) * 0.75
                  + noise(vec2(p.x * 0.12 - world * 0.002, p.y * 0.06)) * 0.25;
     float cloudMask = smoothstep(0.40 - weather.y * 0.3, 0.74 - weather.y * 0.4, clouds) * weather.y;
-    c = mix(c, vec3(0.16, 0.21, 0.285), cloudMask);
-    sleigh(c, p, world, weather.y);
+    c = mix(c, mix(vec3(0.16, 0.21, 0.285), vec3(0.60, 0.67, 0.70), light.x), cloudMask);
+    if (night > 0.7) sleigh(c, p, world, weather.y);
     // An occasional shooting star, only through a mostly clear sky.
     float starAge = mod(world, 97.0) - 41.0;
-    if (starAge > 0.0 && starAge < 1.8 && weather.y < 0.55) {
+    if (starAge > 0.0 && starAge < 1.8 && weather.y < 0.55 && night > 0.7) {
         vec2 head = vec2(42.0 + starAge * 23.0, 140.0 - starAge * 6.0);
         c = mix(c, vec3(0.59, 0.72, 0.78), stroke(p, head - vec2(5.0, -1.4), head, 0.45));
     }
     float ridge = 110.0 + 6.0 * sin(p.x * 0.065) + 3.0 * sin(p.x * 0.18);
-    c = mix(c, vec3(0.13, 0.235, 0.30), 1.0 - step(ridge, p.y));
+    c = mix(c, mix(vec3(0.13, 0.235, 0.30), vec3(0.36, 0.48, 0.51), light.x), 1.0 - step(ridge, p.y));
     for (int i = 0; i < 7; ++i) {
         float k = float(i);
-        c = mix(c, vec3(0.075, 0.17, 0.205), pine(p, 26.0 + k * 12.0, 84.0, 23.0 + hash1(vec2(k, 6.0)) * 13.0));
-        c = mix(c, vec3(0.04, 0.105, 0.14), pine(p, 22.0 + k * 15.0, 79.0, 19.0 + hash1(vec2(k, 9.0)) * 10.0));
+        c = mix(c, mix(vec3(0.075, 0.17, 0.205), vec3(0.19, 0.34, 0.30), light.x), pine(p, 26.0 + k * 12.0, 84.0, 23.0 + hash1(vec2(k, 6.0)) * 13.0));
+        c = mix(c, mix(vec3(0.04, 0.105, 0.14), vec3(0.12, 0.25, 0.22), light.x), pine(p, 22.0 + k * 15.0, 79.0, 19.0 + hash1(vec2(k, 9.0)) * 10.0));
     }
     visitor(c, p, world);
     // Three depths of snowfall; a blizzard is dense, fast and wind-driven.
@@ -274,7 +297,7 @@ vec3 outside(vec2 p, float t) {
         vec2 id = floor(snow / grid), f = mod(snow, grid);
         float on = step(1.0 - weather.x * (0.35 + layer * 0.12), hash1(id + layer * 12.0));
         float flake = box(f, vec4(2.0, 3.0, 3.0, 4.0 + step(0.8, weather.x))) * on;
-        c = mix(c, vec3(0.56, 0.68, 0.77), flake * (0.45 + layer * 0.22));
+        c = mix(c, mix(vec3(0.56, 0.68, 0.77), vec3(0.85, 0.88, 0.86), light.x), flake * (0.45 + layer * 0.22));
     }
     return c;
 }
@@ -596,7 +619,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
                  * step(140.0, p.y));
     lit *= 1.0 - shadow * 0.38;
     vec3 ambient = vec3(0.36, 0.37, 0.46) + clamp(uRoom, 0.0, 1.0) * vec3(0.16, 0.14, 0.13);
-    c *= ambient + lit * vec3(1.5, 0.91, 0.43) + moonLight * vec3(0.02, 0.11, 0.19);
+    vec2 light = daylight();
+    ambient += light.x * vec3(0.12, 0.13, 0.10);
+    vec3 windowLight = mix(vec3(0.02, 0.11, 0.19), vec3(0.28, 0.33, 0.30), light.x);
+    windowLight += light.y * vec3(0.14, 0.045, 0.01);
+    c *= ambient + lit * vec3(1.5, 0.91, 0.43) + moonLight * windowLight;
     // Independent glass exposure preserves the cool-night/warm-fire contrast.
     if (box(p, vec4(35.0, 88.0, 88.0, 141.0)) > 0.5
         && box(p, vec4(60.0, 86.0, 64.0, 143.0)) < 0.5
