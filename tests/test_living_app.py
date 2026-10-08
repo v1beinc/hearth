@@ -48,7 +48,6 @@ def advance_wall():
     app.window.dispatch_event('on_key_press', K.E, 0)
     app.window.dispatch_event('on_key_press', K.T, 0)
     app.window.dispatch_event('on_key_press', K.M, 0)
-    app.window.dispatch_event('on_key_press', K.M, 0)
     app.window.dispatch_event('on_key_press', K.NUM_0, 0)
     app.window.set_size(1280, 720)
 
@@ -58,7 +57,7 @@ def check_and_finish():
     assert app.values['uWeather'] == 1
     assert app.values['uShowcase'] == 1
     assert app.values['uDayMode'] == 2
-    assert app.sound.mode == 2
+    assert app.sound.mode == 1
     assert round(app.sound.volume, 2) == .4
     assert all(player.loop and not player.playing for player in app.sound.players.values())
     w, h = app.window.get_framebuffer_size()

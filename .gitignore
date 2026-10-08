@@ -22,3 +22,7 @@ AGENTS.md
 !.env.example
 Thumbs.db
 .DS_Store
+
+# Imported music stays on this computer, outside the public repository.
+/music/*
+!/music/README.md

@@ -32,9 +32,10 @@ Controls (fullscreen is borderless, so there is no title bar to click):
     W              cycle weather (including automatic)
     E              toggle event showcase
     T              night / dawn / day / sunset / Moscow daylight
-    M              sound off / fire and wind / original lofi
+    M              fireplace and wind on / off
     9 / 0          sound volume down / up
-    Y              open the linked YouTube mix with playback controls
+    Y              native music panel (local file, background playback)
+    G              scene controls (speed, pixels, flame size)
 
 Settings come from hearth.toml next to this file; CLI flags override it.
 """
@@ -98,11 +99,12 @@ LAUNCHER_KEYS = {"shader", "monitor", "vsync"}
 from tools.render_still import SHADERS
 from tools.scene_clock import moscow_i_date
 from tools.ambient_sound import AmbientSound
-from tools.music_page import MusicPage
+from tools.native_music import NativeMusic, choose_audio_file
+from tools.control_panel import ControlPanel
 
 WEATHER_NAMES = ("Авто", "Ясно", "Снег", "Метель", "Облачно")
 DAY_NAMES = ("По времени МСК", "Ночь", "Рассвет", "День", "Закат")
-SOUND_NAMES = ("Выключен", "Камин и ветер", "Камин + lofi")
+SOUND_NAMES = ("Выключен", "Камин и ветер")
 PRESET_NAMES = {1: "Вечер", 2: "Тихая ночь", 3: "Жаркий огонь", 4: "Ретро"}
 
 # Which knobs the arrow-style keys move, and by how much per press.
@@ -152,6 +154,8 @@ def load_config(path: Path, shader: str) -> dict[str, float]:
 
 
 class Hearth:
+    CONTROL_LIMITS = {"uSpeed": (0.0, 3.0), "uPixel": (1.0, 20.0), "uScale": (0.5, 2.0)}
+
     def __init__(self, shader: str, values: dict[str, float],
                  windowed: str | None, monitor: int, vsync: bool):
         screens = pyglet.display.get_display().get_screens()
@@ -199,9 +203,12 @@ class Hearth:
         self.frame = 0
         self._last = self.start
         self.elapsed = 0.0
+        self.scene_time = 0.0
         self.paused = False
         self.sound = AmbientSound(ROOT / "assets" / "audio")
-        self.music_page = MusicPage()
+        local_mix = ROOT / "music" / "lofi-mix.mp3"
+        self.music = NativeMusic(local_mix if local_mix.exists() else ROOT / "assets" / "audio" / "lofi.wav")
+        self.panel = ControlPanel(self)
         self._closed = False
         self.shader = shader
         self.shots = 0
@@ -212,13 +219,13 @@ class Hearth:
         self.initial_preset_name = self.preset_name
         self.last_caption = ""
         self.notice_until = self.start + 5.0
-        self.notice = pyglet.text.Label("H — помощь   ·   M — звук   ·   Y — YouTube",
+        self.notice = pyglet.text.Label("H — помощь   ·   M — камин   ·   Y — музыка   ·   G — сцена",
                                        font_name="Segoe UI", font_size=12,
                                        color=(239, 210, 173, 255), anchor_x="center", y=22)
         self.help_background = pyglet.shapes.Rectangle(12, 12, 425, 310, color=(27, 20, 22))
         self.help_background.opacity = 230
         self.help_label = pyglet.text.Label(
-            "Тихий вечер\n\n1–4   Настроение\nSpace   Пауза / продолжить\nW   Погода     T   Время суток\nE   Редкие события: просмотр\nM   Звук     9 / 0   Громкость\nY   YouTube: музыка и перемотка\n[ / ]   Скорость     - / =   Свет\nF   Полный экран     S   Снимок\nR   Сброс     H   Скрыть помощь\nEsc / Q   Выход",
+            "Тихий вечер\n\n1–4   Настроение\nSpace   Пауза сцены\nW   Погода     T   Время суток\nE   Редкие события: просмотр\nM   Камин     9 / 0   Его громкость\nY   Музыка     G   Настройки сцены\n↑ / ↓   Скорость     , / .   Пиксели\n- / =   Свет     F   Полный экран\nS   Снимок     R   Сброс\nH   Скрыть помощь     Esc / Q   Выход",
             font_name="Segoe UI", font_size=12, color=(239, 210, 173, 255),
             x=26, y=235, anchor_y="top", multiline=True, width=395)
         self._help_size = None
@@ -229,6 +236,7 @@ class Hearth:
         self.last_activity = time.perf_counter()
 
     def toggle_pause(self) -> None:
+        self.advance_animation(time.perf_counter())
         self.paused = not self.paused
         self.update_sound()
         self.notify("Пауза · часы продолжают идти" if self.paused else "Продолжаем")
@@ -251,7 +259,7 @@ class Hearth:
 
     def cycle_sound(self) -> None:
         try:
-            self.sound.set_mode(self.sound.mode + 1)
+            self.sound.set_mode(0 if self.sound.mode else 1)
             self.update_sound()
             self.notify("Звук: " + SOUND_NAMES[self.sound.mode])
         except Exception as exc:
@@ -265,16 +273,73 @@ class Hearth:
         self.notify(f"Громкость: {round(self.sound.volume * 100)}%")
 
     def open_music(self) -> None:
-        # Avoid two music tracks playing together; fire and wind can continue.
-        if self.sound.mode == 2:
-            self.sound.set_mode(1)
-            self.update_sound()
+        self.panel.toggle("music")
+        if self.panel.visible and self.music.player is None:
+            try:
+                self.music.load(self.music.path)
+                self.panel.error = ""
+            except Exception as exc:
+                print(f"audio unavailable: {exc}", file=sys.stderr)
+                self.panel.error = "Откройте MP3 или WAV"
+
+    def panel_action(self, name) -> None:
         try:
-            self.music_page.open()
-            self.notify("YouTube-плеер открыт в браузере")
-        except OSError as exc:
-            print(f"music page unavailable: {exc}", file=sys.stderr)
-            self.notify("Не удалось открыть плеер")
+            self.panel.error = ""
+            if name == "close":
+                self.panel.visible = False
+                self.panel.release()
+            elif name in ("music", "scene"):
+                self.panel.tab = name
+                self.panel.size = None
+            elif name == "play":
+                self.music.toggle()
+            elif name in ("back", "forward"):
+                self.music.seek(self.music.position + (-30 if name == "back" else 30))
+            elif name == "repeat":
+                self.music.toggle_repeat()
+            elif name == "ambient":
+                self.cycle_sound()
+            elif name == "open":
+                self.advance_animation(time.perf_counter())
+                try:
+                    path = choose_audio_file(getattr(self.window, "_hwnd", None))
+                    if path:
+                        self.music.load(path)
+                finally:
+                    self._last = time.perf_counter()
+        except Exception as exc:
+            print(f"audio unavailable: {exc}", file=sys.stderr)
+            self.notify("Не удалось открыть аудио · попробуйте MP3 или WAV")
+            self.panel.error = "Ошибка аудиофайла"
+
+    def panel_slider(self, name, fraction) -> None:
+        try:
+            if name == "seek":
+                if self.music.player is None:
+                    self.music.load(self.music.path)
+                self.music.seek(fraction * self.music.duration)
+            elif name == "volume":
+                self.music.set_volume(fraction)
+            else:
+                low, high = self.CONTROL_LIMITS[name]
+                value = low + fraction * (high - low)
+                self.set_uniform(name, round(value) if name == "uPixel" else value)
+        except Exception as exc:
+            print(f"audio unavailable: {exc}", file=sys.stderr)
+            self.notify("Не удалось открыть аудио")
+            self.panel.error = "Ошибка аудиофайла"
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        self.last_activity = time.perf_counter()
+        if self.panel.press(x, y, button):
+            return pyglet.event.EVENT_HANDLED
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        self.last_activity = time.perf_counter()
+        self.panel.drag(x)
+
+    def on_mouse_release(self, x, y, button, modifiers):
+        self.panel.release()
 
     def on_hide(self) -> None:
         self.sound.hidden = True
@@ -294,11 +359,21 @@ class Hearth:
         self.last_activity = time.perf_counter()
 
     def set_uniform(self, name: str, value: float) -> None:
-        self.values[name] = max(0.0, value)
+        if name == "uSpeed":
+            self.advance_animation(time.perf_counter())
+        low, high = self.CONTROL_LIMITS.get(name, (0.0, float("inf")))
+        self.values[name] = min(high, max(low, value))
 
     def nudge(self, name: str, delta: float) -> None:
         self.set_uniform(name, self.values[name] + delta)
-        self.notify(f"{'Скорость' if name == 'uSpeed' else 'Свет' if name == 'uIntensity' else 'Пиксели'}: {self.values[name]:.1f}")
+        self.notify(f"{'Скорость анимации' if name == 'uSpeed' else 'Свет' if name == 'uIntensity' else 'Размер пикселя'}: {self.values[name]:.1f}")
+
+    def advance_animation(self, now) -> None:
+        delta = max(0.0, now - self._last)
+        self._last = now
+        if not self.paused and not self.sound.hidden:
+            self.elapsed += delta
+            self.scene_time += delta * self.values.get("uSpeed", 1.0)
 
     def on_draw(self, draw_overlay: bool = True) -> None:
         """Render one frame. This IS the on_draw handler.
@@ -322,17 +397,15 @@ class Hearth:
         now = time.perf_counter()
         elapsed = now - self._last
         dt = min(elapsed, 0.1)
-        self._last = now
-        if not self.paused:
-            self.elapsed += elapsed
-        t = self.elapsed
+        self.advance_animation(now)
+        t = self.scene_time
         date = moscow_i_date()
         self.update_sound()
         caption = f"Hearth — {self.preset_name} · {int(date[3]) // 3600:02}:{int(date[3]) // 60 % 60:02} МСК"
         if caption != self.last_caption:
             self.window.set_caption(caption)
             self.last_caption = caption
-        visible = not self.window.fullscreen or self.help_visible or now - self.last_activity < 3.0
+        visible = not self.window.fullscreen or self.help_visible or self.panel.visible or now - self.last_activity < 3.0
         if visible != self.cursor_visible:
             self.window.set_mouse_visible(visible)
             self.cursor_visible = visible
@@ -348,10 +421,13 @@ class Hearth:
                 pass
         for k, loc in self.loc.items():
             if loc is not None:
-                loc.value = self.values[k]
+                # Speed is integrated by the host, preserving phase when it changes.
+                loc.value = 1.0 if k == "uSpeed" else self.values[k]
         self.vao.render(GL_TRIANGLES)
         if draw_overlay:
-            if self.help_visible:
+            if self.panel.visible:
+                self.panel.draw()
+            elif self.help_visible:
                 size = (self.window.width, self.window.height)
                 if size != self._help_size:
                     width, height = min(425, max(100, size[0] - 24)), min(310, max(100, size[1] - 24))
@@ -411,7 +487,7 @@ class Hearth:
     def apply_preset(self, n: int) -> None:
         for k, v in PRESETS[n].items():
             if k in self.values:
-                self.values[k] = v
+                self.set_uniform(k, v)
         self.preset_name = PRESET_NAMES[n]
         self.notify(self.preset_name)
 
@@ -430,7 +506,8 @@ class Hearth:
             return
         self._closed = True
         self.sound.close()
-        self.music_page.close()
+        self.music.close()
+        self.panel.close()
         for overlay in (self.notice, self.help_label, self.help_background):
             overlay.delete()
         for obj in (self.vao, self.vbo, self.program):
@@ -458,6 +535,7 @@ def main() -> int:
     ap.add_argument("--monitor", type=int, default=None,
                     help="display index for fullscreen (0 = primary)")
     ap.add_argument("--windowed", default=None, metavar="WxH")
+    ap.add_argument("--music", type=Path, help="local audio file for the native player")
     ap.add_argument("--frames", type=int, default=0,
                     help="render N frames then exit (for smoke tests)")
     ap.add_argument("--save", type=Path, default=None, metavar="PATH",
@@ -492,6 +570,8 @@ def main() -> int:
         values[name] = float(val)
 
     app = Hearth(shader, values, args.windowed, monitor, vsync)
+    if args.music:
+        app.music.path = args.music.expanduser().resolve()
 
     if args.frames:
         t0 = time.perf_counter()
@@ -518,16 +598,21 @@ def main() -> int:
 
     def on_key_press(symbol, modifiers):
         app.last_activity = time.perf_counter()
-        if symbol == K.ESCAPE and app.help_visible:
+        if symbol == K.ESCAPE and app.panel.visible:
+            app.panel.visible = False
+            app.panel.release()
+        elif symbol == K.ESCAPE and app.help_visible:
             app.help_visible = False
         elif symbol in (K.Q, K.ESCAPE):
-            app.window.close()
+            app.close()
         elif symbol == K.F:
             app.window.set_fullscreen(not app.window.fullscreen)
         elif symbol == K.SPACE:
             app.toggle_pause()
         elif symbol in (K.H, K.F1):
             app.help_visible = not app.help_visible
+            if app.help_visible:
+                app.panel.visible = False
         elif symbol == K.W:
             app.cycle_weather()
         elif symbol == K.E:
@@ -538,11 +623,14 @@ def main() -> int:
             app.cycle_sound()
         elif symbol == K.Y:
             app.open_music()
+        elif symbol == K.G:
+            app.panel.toggle("scene")
         elif symbol == K.NUM_9:
             app.change_volume(-0.05)
         elif symbol == K.NUM_0:
             app.change_volume(0.05)
         elif symbol == K.R:
+            app.advance_animation(time.perf_counter())
             app.values.update(app.initial_values)
             app.preset_name = app.initial_preset_name
             app.sound.set_mode(0)
@@ -556,9 +644,9 @@ def main() -> int:
         elif symbol == K.C:
             for name in sorted(app.values):
                 print(f"  {name} = {app.values[name]:.2f}")
-        elif symbol in (K.BRACKETLEFT, K.LEFT):
+        elif symbol in (K.BRACKETLEFT, K.LEFT, K.DOWN):
             app.nudge("uSpeed", -STEPPED["uSpeed"])
-        elif symbol in (K.BRACKETRIGHT, K.RIGHT):
+        elif symbol in (K.BRACKETRIGHT, K.RIGHT, K.UP):
             app.nudge("uSpeed", +STEPPED["uSpeed"])
         elif symbol == K.MINUS:
             app.nudge("uIntensity", -STEPPED["uIntensity"])
@@ -571,6 +659,8 @@ def main() -> int:
         elif K.NUM_1 <= symbol <= K.NUM_4:
             app.apply_preset(symbol - K.NUM_1 + 1)
             print(f"preset {symbol - K.NUM_1 + 1}")
+        # Consume Esc after dismissing an overlay: pyglet's default handler quits.
+        return pyglet.event.EVENT_HANDLED
 
     app.window.push_handlers(on_key_press)
 
@@ -578,7 +668,7 @@ def main() -> int:
     print(f"display  : {app.window.width}x{app.window.height} "
           f"(index {monitor})")
     print("F fullscreen | Q/Esc quit | [ ] speed | - = intensity | , . pixel "
-          "| 1-4 presets | Space pause | W weather | T daylight | M sound | 9/0 volume | Y YouTube | E events | H help | R reset | S save")
+          "| 1-4 presets | Space pause | W weather | T daylight | M fireplace | 9/0 volume | Y music | G scene | E events | H help | R reset | S save")
     print(f"settings : {args.config if args.config.exists() else '(defaults)'}")
 
     # pyglet derives the event name from the attribute name, so this must be
@@ -586,6 +676,7 @@ def main() -> int:
     # EventException: Unknown event "draw" and the window stays black.
     app.window.push_handlers(app.on_draw)
     app.window.push_handlers(app.on_mouse_motion)
+    app.window.push_handlers(app.on_mouse_press, app.on_mouse_drag, app.on_mouse_release)
     app.window.push_handlers(app.on_hide, app.on_show)
 
     def on_close():

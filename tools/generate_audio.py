@@ -41,6 +41,27 @@ def add_loop(track, sound, start):
     np.add.at(track, index, sound)
 
 
+def make_fire():
+    """Low, irregular combustion with rounded wood snaps, no white-noise clicks."""
+    rng = np.random.default_rng(49183)
+    count = RATE * 24
+    time = np.arange(count) / RATE
+    breath = .75 + .12 * np.sin(2 * np.pi * time / 8) + .08 * np.sin(2 * np.pi * time / 3)
+    fire = noise(rng, count, 480, 90) * breath * .065
+    fire += noise(rng, count, 1900, 500) * .025
+    for start in rng.uniform(0, 24, 54):
+        duration = rng.uniform(.07, .22)
+        age = np.arange(int(RATE * duration)) / RATE
+        envelope = (1 - np.exp(-age / .003)) * np.exp(-age / rng.uniform(.015, .055))
+        envelope *= np.minimum((duration - age) / .008, 1)
+        crackle = noise(rng, len(age), rng.uniform(950, 2100), 250)
+        add_loop(fire, crackle * envelope * rng.uniform(.045, .16), start)
+    # Periodic noise and circular envelopes make an uninterrupted loop.
+    fire = normalize(fire, .055)
+    fire *= min(1, .30 / np.max(np.abs(fire)))
+    return fire
+
+
 def make_loops():
     rng = np.random.default_rng(18271)
     n = RATE * 24
@@ -101,7 +122,8 @@ def make_loops():
             snare = rng.normal(size=len(age)) * np.exp(-age / 0.04) * 0.012
             snare *= np.minimum(age / 0.003, 1)
             add_loop(music, snare, step * beat + 0.014)
-    return {"fire": normalize(fire, 0.11), "wind": normalize(wind, 0.10),
+    # Preserve the existing random sequence for the wind and original composition.
+    return {"fire": make_fire(), "wind": normalize(wind, 0.10),
             "lofi": normalize(music, 0.13)}
 
 
@@ -112,9 +134,14 @@ def write_wav(path, samples):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--only", choices=("fire",), help="regenerate only the fireplace")
+    args = parser.parse_args()
     target = ROOT / "assets" / "audio"
     target.mkdir(parents=True, exist_ok=True)
-    for name, samples in make_loops().items():
+    loops = {"fire": make_fire()} if args.only == "fire" else make_loops()
+    for name, samples in loops.items():
         write_wav(target / f"{name}.wav", samples)
         print(f"{name}: {len(samples) / RATE:.0f}s, original synthesized PCM16")
 

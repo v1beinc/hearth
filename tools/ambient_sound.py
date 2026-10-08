@@ -5,7 +5,7 @@ from pathlib import Path
 class AmbientSound:
     def __init__(self, directory: Path):
         self.directory = directory
-        self.mode = 0  # 0 silent, 1 fireplace + weather, 2 ambience + original lofi
+        self.mode = 0  # 0 silent, 1 fireplace + weather; music has its own player
         self.volume = 0.35
         self.paused = False
         self.hidden = False
@@ -13,11 +13,11 @@ class AmbientSound:
         self._last = None
 
     def set_mode(self, mode):
-        mode = int(mode) % 3
+        mode = int(mode) % 2
         if mode and not self.players:
             import pyglet
             try:
-                for name in ("fire", "wind", "lofi"):
+                for name in ("fire", "wind"):
                     source = pyglet.media.load(str(self.directory / f"{name}.wav"), streaming=False)
                     player = pyglet.media.Player()
                     player.loop = True
@@ -37,7 +37,7 @@ class AmbientSound:
         self._last = state
         enabled = self.mode > 0 and not self.paused and not self.hidden and self.volume > 0
         wind = {0: 0.22, 1: 0.08, 2: 0.22, 3: 0.65, 4: 0.15}.get(int(weather), 0.22)
-        gains = {"fire": 0.55, "wind": wind, "lofi": 0.75 if self.mode == 2 else 0}
+        gains = {"fire": 0.55, "wind": wind}
         for name, player in self.players.items():
             gain = gains[name] * self.volume if enabled else 0
             player.volume = gain
