@@ -95,7 +95,7 @@ class Observed(Original):
         pyglet.clock.schedule_once(guarded(check_and_finish), .9)
 
 hearth.Hearth = Observed
-sys.argv = ['hearth.py', '--windowed', '960x540']
+sys.argv = ['hearth.py', '--windowed', '960x540', '--no-settings']
 hearth.main()
 if errors: raise SystemExit('; '.join(errors))
 assert 'time' in state

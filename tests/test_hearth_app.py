@@ -72,7 +72,7 @@ import hearth
 OUT = ROOT / "out" / "_eventloop_check.png"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
-sys.argv = ["hearth.py", "--windowed", "480x270"]
+sys.argv = ["hearth.py", "--windowed", "480x270", "--no-settings"]
 
 capture = {"done": False, "error": None}
 

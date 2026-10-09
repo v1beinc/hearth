@@ -1,7 +1,8 @@
 # Hearth — configuration. Every value is optional; delete a line to fall back
 # to the built-in default (see SHADERS in tools/render_still.py).
 #
-# Restart the app after editing: it reads this file at startup.
+# Base defaults. Saved config.json preferences override scene values.
+# Use --no-settings to run from these defaults without loading/saving preferences.
 
 [hearth]
 

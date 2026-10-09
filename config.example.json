@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "shader": "hearth",
+  "scene": {
+    "uIntensity": 1.05,
+    "uSpeed": 1.0,
+    "uWarmth": 0.5,
+    "uScale": 1.0,
+    "uDetail": 0.7,
+    "uEmbers": 0.6,
+    "uRoom": 0.85,
+    "uPixel": 6.0,
+    "uFps": 12.0,
+    "uDither": 0.2,
+    "uSteps": 12.0,
+    "uWall": 1.0,
+    "uSteam": 0.85,
+    "uWeather": 0,
+    "uShowcase": 0,
+    "uLife": 1,
+    "uDayMode": 1
+  },
+  "window": {"width": 1280, "height": 720, "fullscreen": true},
+  "audio": {"ambient_enabled": false, "ambient_volume": 0.35, "music_volume": 0.35, "repeat": true}
+}

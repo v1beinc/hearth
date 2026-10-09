@@ -78,8 +78,9 @@ class ControlPanel:
         rect(0, 307, 400, 3, (182, 119, 70))
         label("header", "Тихий вечер", 20, 281, 15)
         button("close", "×", 352, 265, 30)
-        button("music", "Музыка", 20, 222, 172)
-        button("scene", "Сцена", 202, 222, 178)
+        button("music", "Музыка", 20, 222, 110)
+        button("scene", "Сцена", 140, 222, 110)
+        button("settings", "Настройки", 260, 222, 120)
         if self.tab == "music":
             label("track", "", 20, 197, 10)
             slider("seek", 170)
@@ -92,7 +93,7 @@ class ControlPanel:
             slider("volume", 68)
             button("open", "Открыть трек", 20, 16, 155)
             label("status", "", 188, 32, 9)
-        else:
+        elif self.tab == "scene":
             for name, text, y in (("uSpeed", "Скорость анимации", 199),
                                   ("uPixel", "Размер пикселя", 148),
                                   ("uScale", "Размер пламени", 97)):
@@ -101,6 +102,14 @@ class ControlPanel:
                     slider(name, y - 23)
             button("ambient", "", 20, 17, 165)
             label("ambient_volume", "9 / 0 — громкость камина", 195, 33, 9)
+        else:
+            label("info", "Сцена, размер окна и громкость", 20, 197, 10)
+            label("info2", "Запоминаются между запусками", 20, 177, 10)
+            button("save_settings", "Сохранить сейчас", 20, 121, 360)
+            button("export_settings", "Экспорт…", 20, 75, 172)
+            button("import_settings", "Импорт…", 202, 75, 178)
+            label("settings_status", "", 20, 50, 9)
+            button("reset_scene", "Сбросить сцену", 20, 8, 360)
 
     def draw(self):
         self.layout()
@@ -116,7 +125,7 @@ class ControlPanel:
             for name, fraction in (("seek", music.position / music.duration if music.duration else 0),
                                    ("volume", music.volume)):
                 self.bars[name].width = 360 * self.scale * fraction
-        else:
+        elif self.tab == "scene":
             for name, (low, high) in self.app.CONTROL_LIMITS.items():
                 if name not in self.bars:
                     continue
@@ -125,6 +134,9 @@ class ControlPanel:
                 self.labels[name].text = f"{caption} · {value:.2f}" + ("×" if name != "uPixel" else "")
                 self.bars[name].width = 360 * self.scale * max(0, min(1, (value - low) / (high - low)))
             self.labels["ambient"].text = "Камин: вкл" if self.app.sound.mode else "Камин: выкл"
+        else:
+            text = self.app.settings_status
+            self.labels["settings_status"].text = text if len(text) <= 50 else text[:47] + "…"
         self.batch.draw()
 
     def press(self, x, y, button):

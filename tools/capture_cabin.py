@@ -39,6 +39,7 @@ class FrameRenderer:
         self.program["iResolution"].value = (float(w), float(h), 1.0)
         self.program["iTime"].value = t
         self.program["iDate"].value = (2026.0, 1.0, 1.0, float(clock_seconds))
+        self.program["iInteraction"].value = overrides.get("iInteraction", (0., 0., 0., 0.))
         for name, value in (SHADERS["hearth"] | overrides).items():
             self.program[name].value = value
         self.vao.render(moderngl.TRIANGLES)

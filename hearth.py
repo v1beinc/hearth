@@ -37,7 +37,8 @@ Controls (fullscreen is borderless, so there is no title bar to click):
     Y              native music panel (local file, background playback)
     G              scene controls (speed, pixels, flame size)
 
-Settings come from hearth.toml next to this file; CLI flags override it.
+Base settings come from hearth.toml; config.json remembers native preferences.
+CLI flags override both. K opens import/export. Click wood, coffee or a visiting cat.
 """
 from __future__ import annotations
 
@@ -101,6 +102,8 @@ from tools.scene_clock import moscow_i_date
 from tools.ambient_sound import AmbientSound
 from tools.native_music import NativeMusic, choose_audio_file
 from tools.control_panel import ControlPanel
+from tools.settings import read_settings, write_settings, SettingsError, LIMITS
+from tools.interactions import Interactions, scene_point
 
 WEATHER_NAMES = ("Авто", "Ясно", "Снег", "Метель", "Облачно")
 DAY_NAMES = ("По времени МСК", "Ночь", "Рассвет", "День", "Закат")
@@ -209,6 +212,12 @@ class Hearth:
         local_mix = ROOT / "music" / "lofi-mix.mp3"
         self.music = NativeMusic(local_mix if local_mix.exists() else ROOT / "assets" / "audio" / "lofi.wav")
         self.panel = ControlPanel(self)
+        self.interactions = Interactions()
+        self.hover_target = None
+        self.settings_path = None
+        self.settings_status = "Сохраняются автоматически при выходе"
+        self.music_resume_position = 0.0
+        self.windowed_size = (self.window.width, self.window.height) if not self.window.fullscreen else (1280, 720)
         self._closed = False
         self.shader = shader
         self.shots = 0
@@ -219,13 +228,13 @@ class Hearth:
         self.initial_preset_name = self.preset_name
         self.last_caption = ""
         self.notice_until = self.start + 5.0
-        self.notice = pyglet.text.Label("H — помощь   ·   M — камин   ·   Y — музыка   ·   G — сцена",
+        self.notice = pyglet.text.Label("H — помощь   ·   Y — музыка   ·   G — сцена   ·   K — настройки",
                                        font_name="Segoe UI", font_size=12,
                                        color=(239, 210, 173, 255), anchor_x="center", y=22)
         self.help_background = pyglet.shapes.Rectangle(12, 12, 425, 310, color=(27, 20, 22))
         self.help_background.opacity = 230
         self.help_label = pyglet.text.Label(
-            "Тихий вечер\n\n1–4   Настроение\nSpace   Пауза сцены\nW   Погода     T   Время суток\nE   Редкие события: просмотр\nM   Камин     9 / 0   Его громкость\nY   Музыка     G   Настройки сцены\n↑ / ↓   Скорость     , / .   Пиксели\n- / =   Свет     F   Полный экран\nS   Снимок     R   Сброс\nH   Скрыть помощь     Esc / Q   Выход",
+            "Тихий вечер\n\n1–4   Настроение     Space   Пауза сцены\nW   Погода     T   Время суток\nE   Редкие события: просмотр\nM   Камин     9 / 0   Его громкость\nY   Музыка     G   Сцена     K   Настройки\n↑ / ↓   Скорость     , / .   Пиксели\n- / =   Свет     F   Полный экран\nКлик: поленья, чашка, кошка\nS   Снимок     R   Сброс\nH   Скрыть помощь     Esc / Q   Выход",
             font_name="Segoe UI", font_size=12, color=(239, 210, 173, 255),
             x=26, y=235, anchor_y="top", multiline=True, width=395)
         self._help_size = None
@@ -276,11 +285,104 @@ class Hearth:
         self.panel.toggle("music")
         if self.panel.visible and self.music.player is None:
             try:
-                self.music.load(self.music.path)
+                self.load_music()
                 self.panel.error = ""
             except Exception as exc:
                 print(f"audio unavailable: {exc}", file=sys.stderr)
                 self.panel.error = "Откройте MP3 или WAV"
+
+    def load_music(self):
+        self.music.load(self.music.path)
+        if self.music_resume_position:
+            self.music.seek(self.music_resume_position)
+            self.music_resume_position = 0.0
+
+    def settings_snapshot(self, portable=False):
+        width, height = self.windowed_size if self.window.fullscreen else self.window.get_size()
+        data = {
+            "version": 1, "shader": self.shader, "scene": dict(self.values),
+            "window": {"width": max(240, width), "height": max(180, height), "fullscreen": self.window.fullscreen},
+            "audio": {"ambient_enabled": bool(self.sound.mode), "ambient_volume": self.sound.volume,
+                      "music_volume": self.music.volume, "repeat": self.music.repeat},
+        }
+        if not portable:
+            data["music"] = {"path": str(self.music.path.resolve()),
+                             "position": (0.0 if self.music.ended else self.music.position) if self.music.player else self.music_resume_position}
+        return data
+
+    def save_settings(self, path=None, portable=False):
+        path = path or self.settings_path
+        if path is None:
+            raise SettingsError("Автосохранение отключено · используйте экспорт")
+        write_settings(path, self.settings_snapshot(portable))
+        self.settings_status = "Настройки экспортированы" if portable else "Настройки сохранены"
+
+    def apply_settings(self, data, restore_window=True, restore_music=True):
+        # read_settings validates the whole document before this method runs.
+        if data["shader"] != self.shader:
+            raise SettingsError("Другой вид сцены: запустите с --config этим файлом")
+        self.advance_animation(time.perf_counter())
+        for name, value in data["scene"].items():
+            if name in self.values:
+                self.values[name] = value
+        self.preset_name = "Свои настройки"
+        audio = data["audio"]
+        self.music.set_volume(audio.get("music_volume", self.music.volume))
+        self.music.repeat = audio.get("repeat", self.music.repeat)
+        if self.music.player:
+            self.music.player.loop = self.music.repeat
+        self.sound.volume = audio.get("ambient_volume", self.sound.volume)
+        self.sound.set_mode(int(audio.get("ambient_enabled", bool(self.sound.mode))))
+        self.update_sound()
+        window = data["window"]
+        if restore_window and window:
+            width = window.get("width", self.windowed_size[0])
+            height = window.get("height", self.windowed_size[1])
+            self.windowed_size = (width, height)
+            fullscreen = window.get("fullscreen", self.window.fullscreen)
+            if self.window.fullscreen != fullscreen:
+                self.window.set_fullscreen(fullscreen)
+            if not fullscreen:
+                # Bound imported window size to the current display.
+                screen = self.window.screen
+                self.window.set_size(min(width, screen.width), min(height, screen.height))
+        # Imported exports do not choose a private file or start playback.
+        music = data["music"]
+        if restore_music and music.get("path") and Path(music["path"]).is_file():
+            self.music.path = Path(music["path"])
+            self.music_resume_position = music.get("position", 0)
+        elif restore_music and music.get("path"):
+            self.music_resume_position = 0.0
+            self.settings_status = "Трек недоступен · выберите его в Музыке"
+            return
+        self.settings_status = "Настройки применены"
+
+    def settings_action(self, name):
+        self.advance_animation(time.perf_counter())
+        try:
+            if name == "save_settings":
+                self.save_settings()
+            elif name == "reset_scene":
+                self.values.update(load_config(CONFIG, self.shader))
+                self.interactions = Interactions()
+                self.preset_name = "Вечер"
+                self.settings_status = "Сцена сброшена"
+            else:
+                path = choose_audio_file(getattr(self.window, "_hwnd", None), settings=True, save=name == "export_settings")
+                if path:
+                    if name == "export_settings":
+                        self.save_settings(path, portable=True)
+                    else:
+                        data = read_settings(path)
+                        self.apply_settings(data, restore_music=False)
+                        self.settings_status = "Настройки импортированы"
+                        if self.settings_path:
+                            self.save_settings()
+        except (OSError, SettingsError) as exc:
+            self.settings_status = str(exc)
+            print(f"settings: {exc}", file=sys.stderr)
+        finally:
+            self._last = time.perf_counter()
 
     def panel_action(self, name) -> None:
         try:
@@ -288,10 +390,12 @@ class Hearth:
             if name == "close":
                 self.panel.visible = False
                 self.panel.release()
-            elif name in ("music", "scene"):
+            elif name in ("music", "scene", "settings"):
                 self.panel.tab = name
                 self.panel.size = None
             elif name == "play":
+                if self.music.player is None:
+                    self.load_music()
                 self.music.toggle()
             elif name in ("back", "forward"):
                 self.music.seek(self.music.position + (-30 if name == "back" else 30))
@@ -305,8 +409,11 @@ class Hearth:
                     path = choose_audio_file(getattr(self.window, "_hwnd", None))
                     if path:
                         self.music.load(path)
+                        self.music_resume_position = 0.0
                 finally:
                     self._last = time.perf_counter()
+            elif name in ("save_settings", "export_settings", "import_settings", "reset_scene"):
+                self.settings_action(name)
         except Exception as exc:
             print(f"audio unavailable: {exc}", file=sys.stderr)
             self.notify("Не удалось открыть аудио · попробуйте MP3 или WAV")
@@ -316,7 +423,7 @@ class Hearth:
         try:
             if name == "seek":
                 if self.music.player is None:
-                    self.music.load(self.music.path)
+                    self.load_music()
                 self.music.seek(fraction * self.music.duration)
             elif name == "volume":
                 self.music.set_volume(fraction)
@@ -333,6 +440,13 @@ class Hearth:
         self.last_activity = time.perf_counter()
         if self.panel.press(x, y, button):
             return pyglet.event.EVENT_HANDLED
+        if button == pyglet.window.mouse.LEFT and self.shader == "hearth" and not self.help_visible:
+            self.advance_animation(time.perf_counter())
+            target = self.interaction_target(x, y)
+            if target:
+                self.interactions.click(target, self.scene_time)
+                self.notify({"wood": "Полено в огне · пусть разгорится", "coffee": "Свежий кофе · осторожно, горячий", "cat": "Мрр…"}[target])
+                return pyglet.event.EVENT_HANDLED
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
         self.last_activity = time.perf_counter()
@@ -357,11 +471,17 @@ class Hearth:
 
     def on_mouse_motion(self, x, y, dx, dy) -> None:
         self.last_activity = time.perf_counter()
+        self.hover_target = self.interaction_target(x, y) if self.shader == "hearth" and not self.help_visible else None
+
+    def interaction_target(self, x, y):
+        fps = max(1, self.values.get("uFps", 12))
+        t = int(self.scene_time * fps) / fps
+        return self.interactions.target(scene_point(x, y, self.window.width, self.window.height), t, self.values)
 
     def set_uniform(self, name: str, value: float) -> None:
         if name == "uSpeed":
             self.advance_animation(time.perf_counter())
-        low, high = self.CONTROL_LIMITS.get(name, (0.0, float("inf")))
+        low, high = LIMITS.get(name, (0.0, float("inf")))
         self.values[name] = min(high, max(low, value))
 
     def nudge(self, name: str, delta: float) -> None:
@@ -401,6 +521,8 @@ class Hearth:
         t = self.scene_time
         date = moscow_i_date()
         self.update_sound()
+        if not self.window.fullscreen:
+            self.windowed_size = self.window.get_size()
         caption = f"Hearth — {self.preset_name} · {int(date[3]) // 3600:02}:{int(date[3]) // 60 % 60:02} МСК"
         if caption != self.last_caption:
             self.window.set_caption(caption)
@@ -423,6 +545,8 @@ class Hearth:
             if loc is not None:
                 # Speed is integrated by the host, preserving phase when it changes.
                 loc.value = 1.0 if k == "uSpeed" else self.values[k]
+        if "iInteraction" in self.program:
+            self.program["iInteraction"].value = self.interactions.uniforms(t)
         self.vao.render(GL_TRIANGLES)
         if draw_overlay:
             if self.panel.visible:
@@ -440,6 +564,10 @@ class Hearth:
                 self.help_background.draw()
                 self.help_label.draw()
             elif now < self.notice_until:
+                self.notice.x = self.window.width / 2
+                self.notice.draw()
+            elif self.hover_target:
+                self.notice.text = {"wood": "Поленья · подбросить в камин", "coffee": "Чашка · налить кофе", "cat": "Кошка · погладить"}[self.hover_target]
                 self.notice.x = self.window.width / 2
                 self.notice.draw()
         self.frame += 1
@@ -505,6 +633,11 @@ class Hearth:
         if self._closed:
             return
         self._closed = True
+        if self.settings_path:
+            try:
+                self.save_settings()
+            except (OSError, SettingsError) as exc:
+                print(f"settings not saved: {exc}", file=sys.stderr)
         self.sound.close()
         self.music.close()
         self.panel.close()
@@ -532,6 +665,8 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--shader", default=None, choices=sorted(SHADERS))
     ap.add_argument("--config", type=Path, default=CONFIG)
+    ap.add_argument("--settings", type=Path, default=ROOT / "config.json", help="saved user preferences")
+    ap.add_argument("--no-settings", action="store_true", help="ignore saved preferences and do not autosave")
     ap.add_argument("--monitor", type=int, default=None,
                     help="display index for fullscreen (0 = primary)")
     ap.add_argument("--windowed", default=None, metavar="WxH")
@@ -546,13 +681,29 @@ def main() -> int:
     ap.add_argument("--no-vsync", dest="vsync", action="store_false")
     args = ap.parse_args()
 
+    saved = None
+    settings_error = None
+    settings_path = None if args.no_settings or args.frames else args.settings
+    json_config = args.config.suffix.lower() == ".json"
+    if json_config:
+        try:
+            saved = read_settings(args.config)
+        except SettingsError as exc:
+            raise SystemExit(str(exc)) from exc
+    elif settings_path and settings_path.exists() and args.config == CONFIG:
+        try:
+            saved = read_settings(settings_path)
+        except SettingsError as exc:
+            settings_error = str(exc)
+            settings_path = None  # Preserve a damaged file; don't overwrite it on exit.
+            print(f"saved settings ignored: {exc}", file=sys.stderr)
     cfg = tomllib.loads(args.config.read_text(encoding="utf-8")) \
-        if args.config.exists() else {}
+        if not json_config and args.config.exists() else {}
     section = cfg.get("hearth", {})
     monitor = args.monitor if args.monitor is not None \
         else int(section.get("monitor", 0))
     vsync = args.vsync if args.vsync is not None else bool(section.get("vsync", True))
-    shader = args.shader or section.get("shader", "hearth")
+    shader = args.shader or (saved["shader"] if saved else section.get("shader", "hearth"))
     if shader not in SHADERS:
         raise SystemExit(f"unknown shader {shader!r}; available: {', '.join(sorted(SHADERS))}")
     if not args.windowed and args.monitor is None:
@@ -561,7 +712,9 @@ def main() -> int:
             print(f"configured monitor {monitor} unavailable; opening on monitor 0")
             monitor = 0
 
-    values = load_config(args.config, shader)
+    values = load_config(CONFIG if json_config else args.config, shader)
+    if saved and saved["shader"] == shader:
+        values.update({k: v for k, v in saved["scene"].items() if k in values})
     for item in args.set:
         name, _, val = item.partition("=")
         if name not in values:
@@ -569,9 +722,23 @@ def main() -> int:
                              f"{', '.join(sorted(values))}")
         values[name] = float(val)
 
-    app = Hearth(shader, values, args.windowed, monitor, vsync)
+    windowed = args.windowed
+    if windowed is None and saved and not saved["window"].get("fullscreen", True):
+        screens = pyglet.display.get_display().get_screens()
+        screen = screens[min(max(monitor, 0), len(screens) - 1)]
+        windowed = f"{min(saved['window'].get('width', 1280), screen.width)}x{min(saved['window'].get('height', 720), screen.height)}"
+    app = Hearth(shader, values, windowed, monitor, vsync)
+    app.settings_path = settings_path
+    if saved and saved["shader"] == shader and not args.frames:
+        app.apply_settings(saved, restore_window=False)
+        app.values.update(values)  # Explicit CLI overrides take precedence.
+        app.initial_values = dict(values)
+    if settings_error:
+        app.settings_status = "Неверный config.json · используйте экспорт"
+        app.notify("Настройки не прочитаны · исходный файл сохранён")
     if args.music:
         app.music.path = args.music.expanduser().resolve()
+        app.music_resume_position = 0.0
 
     if args.frames:
         t0 = time.perf_counter()
@@ -625,6 +792,8 @@ def main() -> int:
             app.open_music()
         elif symbol == K.G:
             app.panel.toggle("scene")
+        elif symbol == K.K:
+            app.panel.toggle("settings")
         elif symbol == K.NUM_9:
             app.change_volume(-0.05)
         elif symbol == K.NUM_0:

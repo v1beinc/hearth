@@ -61,6 +61,29 @@ def test_quantized_clock_and_pause(scene):
     assert not np.array_equal(pixels(scene, 12.0), pixels(scene, 13.0))
 
 
+def test_interactive_fuel_increases_fire_and_light_without_changing_geometry(scene):
+    a = pixels(scene, 55, iInteraction=(0, 0, 0, 0))
+    b = pixels(scene, 55, iInteraction=(.85, 0, 0, 0))
+    # Added fuel brightens nearby stone and changes the fire's silhouette.
+    assert b[87:134, 121:133].mean() > a[87:134, 121:133].mean()
+    assert np.abs(b[88:132, 140:183] - a[88:132, 140:183]).mean() > 2
+    # Only a faint reflected glow may change; the outdoor scene stays cool.
+    assert np.abs(a[39:63, 35:59] - b[39:63, 35:59]).mean() < 1
+    assert b[39:63, 35:59, 2].mean() > b[39:63, 35:59, 0].mean() * 1.5
+
+
+def test_pet_response_is_confined_to_the_visible_cat(scene):
+    a = pixels(scene, 55)
+    b = pixels(scene, 55, iInteraction=(0, 0, .8, .8))
+    changed = np.any(a != b, axis=2)
+    assert changed.sum() > 20
+    allowed = np.zeros(changed.shape, dtype=bool)
+    allowed[125:169, 140:215] = True
+    assert not np.any(changed & ~allowed)
+    absent = pixels(scene, 0)
+    assert np.array_equal(absent, pixels(scene, 0, iInteraction=(0, 0, 1, 1)))
+
+
 def test_fire_is_warm_and_confined_to_firebox(scene):
     a = pixels(scene)
     flame = (a[..., 0] > 210) & (a[..., 1] > 65) & (a[..., 2] < 175)

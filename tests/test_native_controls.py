@@ -161,7 +161,7 @@ class Observed(Original):
         pyglet.clock.schedule_once(guarded(finish), 1.9)
 
 hearth.Hearth = Observed
-sys.argv = ['hearth.py', '--windowed', '960x540']
+sys.argv = ['hearth.py', '--windowed', '960x540', '--no-settings']
 try:
     hearth.main()
 finally:

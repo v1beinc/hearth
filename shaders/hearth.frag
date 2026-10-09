@@ -19,6 +19,8 @@ uniform float uWeather;
 uniform float uShowcase;
 uniform float uLife;
 uniform float uDayMode;
+// Transient native interactions: added fuel, fresh coffee, petting, pet age.
+uniform vec4 iInteraction;
 
 // The host's Moscow wall clock keeps daylight independent of animation pause.
 // x = daylight, y = warm twilight; mode 1 preserves the original quiet night.
@@ -317,6 +319,17 @@ float tongue(vec2 p, float x, float height, float width, float phase, float t) {
     w += sin(h * 15.0 - t * 4.0 + phase) * h * 1.2;
     return min(w - abs(p.x - x - sway), min(p.y, height - p.y));
 }
+float livingFlame(vec2 p, float x, float height, float width, float phase, float t) {
+    float h = clamp(p.y / height, 0.0, 1.0);
+    // Flow travels upward; the root stays anchored in the embers.
+    float detail = clamp(uDetail, 0.0, 1.0);
+    float curl = sin(h * 8.0 - t * 3.3 + phase) * h * (2.0 + detail * 2.5);
+    curl += sin(h * 13.0 - t * 4.7 + phase * 2.1) * h * h * detail * 1.8;
+    float centre = x + sin(t * 1.7 + phase) * h * 2.0 + curl;
+    float widthAt = width * pow(max(1.0 - h, 0.0), 0.78);
+    widthAt *= 0.90 + 0.18 * sin(h * 11.0 - t * 4.2 + phase);
+    return min(widthAt - abs(p.x - centre), min(p.y, height - p.y));
+}
 // Glass effects stay inside each pane and preserve the outdoor silhouettes.
 vec3 windowGlass(vec2 p, float t, float intensity, float flicker) {
     vec3 c = outside(p, t);
@@ -367,7 +380,7 @@ void cat(inout vec3 c, vec2 p, float t) {
     float world = worldTime(t), slot = floor(world / 260.0);
     float age = mod(world, 260.0) - 18.0;
     if (age < 0.0 || age > 156.0) return;
-    if (slot > 0.5 && hash1(vec2(slot, 48.0)) < 0.28 && uShowcase < 0.5) return;
+    if (slot > 0.5 && mod(slot * 7.0 + 3.0, 11.0) < 3.0 && uShowcase < 0.5) return;
     float arrive = smoothstep(0.0, 17.0, age);
     float depart = smoothstep(137.0, 156.0, age);
     float x = mix(342.0, 179.0, arrive) + depart * 163.0;
@@ -392,7 +405,8 @@ void cat(inout vec3 c, vec2 p, float t) {
     float body = disc((q - bodyCenter) / vec2(13.5, belly), vec2(0.0), 1.0);
     // Sleeping tail rests on the rug. Walking tail grows from the rump,
     // rises in a soft curve and curls forward at the tip; only the tip sways.
-    float sway = sin(t * 2.0) * 1.2 * (1.0 - rest);
+    float pet = clamp(iInteraction.z, 0.0, 1.0);
+    float sway = sin(t * 2.0) * 1.2 * (1.0 - rest) + sin(iInteraction.w * 6.0) * pet * 1.4;
     vec2 tailRoot = mix(vec2(13.0, 10.0), vec2(13.0, 4.0), rest);
     vec2 tailJoint = mix(vec2(17.0, 12.0), vec2(19.0, 3.0), rest);
     vec2 bend = mix(vec2(19.0 + sway * 0.4, 17.0), vec2(24.0, 3.0), rest);
@@ -436,7 +450,7 @@ void cat(inout vec3 c, vec2 p, float t) {
         float sx = -2.0 + float(i) * 5.0;
         c = mix(c, stripe, body * box(q, vec4(sx, bodyCenter.y + 2.0, sx + 2.0, 16.0)));
     }
-    vec2 head = vec2(-12.0, mix(13.0, 7.0, rest));
+    vec2 head = vec2(-12.0, mix(13.0, 7.0, rest) + pet * 2.5);
     vec2 h = q - head;
     c = mix(c, ink, disc(h / vec2(6.8, 5.8), vec2(0.0), 1.0));
     c = mix(c, fur, disc(h / vec2(6.0, 5.0), vec2(0.0), 1.0));
@@ -452,7 +466,7 @@ void cat(inout vec3 c, vec2 p, float t) {
         rect(c, h, vec4(2.0, 0.0, 5.0, 1.0), vec3(0.17, 0.12, 0.105));
         rect(c, h, vec4(-5.0, -3.0, -1.0, -1.0), cream);
         float snore = mod(t, 6.5) - 3.5;
-        if (snore > 0.0 && rest > 0.95) {
+        if (snore > 0.0 && rest > 0.95 && pet < 0.05) {
             float alpha = (1.0 - smoothstep(1.3, 3.0, snore)) * 0.7;
             sleepyZ(c, q, vec2(-22.0 - floor(snore), 16.0 + floor(snore * 3.0)), alpha);
             sleepyZ(c, q, vec2(-15.0 + floor(snore), 21.0 + floor(snore * 2.0)), alpha * 0.55);
@@ -462,6 +476,14 @@ void cat(inout vec3 c, vec2 p, float t) {
         rect(c, h, vec4(-4.0, 1.0, -3.0, 2.0), vec3(0.78, 0.80, 0.49));
     }
     rect(c, h, vec4(-6.0, -1.0, -4.0, 0.0), vec3(0.43, 0.22, 0.195));
+    if (pet > 0.0) {
+        vec2 heart = floor(h - vec2(-2.0, 12.0 + (1.0 - pet) * 7.0));
+        float shape = max(box(heart, vec4(-3.0, 1.0, 0.0, 4.0)), box(heart, vec4(1.0, 1.0, 4.0, 4.0)));
+        shape = max(shape, box(heart, vec4(-2.0, 0.0, 3.0, 2.0)));
+        shape = max(shape, box(heart, vec4(-1.0, -1.0, 2.0, 1.0)));
+        shape = max(shape, box(heart, vec4(0.0, -2.0, 1.0, 0.0)));
+        c = mix(c, vec3(0.89, 0.44, 0.37), shape * min(pet * 3.0, 1.0));
+    }
 }
 vec3 fireColor(float k) {
     vec3 c = vec3(0.63, 0.16, 0.09);
@@ -483,7 +505,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     p = floor(p) + 0.5;
     float fps = max(uFps, 1.0);
     float t = floor(iTime * fps) / fps * max(uSpeed, 0.0);
-    float intensity = clamp(uIntensity, 0.0, 2.0);
+    float fuel = clamp(iInteraction.x, 0.0, 1.0);
+    float intensity = clamp(uIntensity + fuel * 0.38, 0.0, 2.0);
     float flicker = 0.94 + 0.045 * sin(t * 2.9) + 0.035 * sin(t * 7.3 + 1.0);
 
     vec3 c = wood(p, 0.0);
@@ -588,6 +611,23 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         vec2 leaf = vec2(266.0 + k * 3.0, 105.0 + sin(k * 1.8) * 4.0);
         c = mix(c, vec3(0.29, 0.425, 0.255), disc(p * vec2(1.0, 1.6), leaf * vec2(1.0, 1.6), 4.0));
     }
+    // Original Minecraft-inspired landscape painting, in a timber frame.
+    rect(c, p, vec4(229.0, 142.0, 293.0, 166.0), vec3(0.13, 0.09, 0.08));
+    rect(c, p, vec4(230.0, 143.0, 292.0, 165.0), vec3(0.50, 0.30, 0.15));
+    rect(c, p, vec4(232.0, 145.0, 290.0, 163.0), vec3(0.81, 0.41, 0.27));
+    if (box(p, vec4(232.0, 145.0, 290.0, 163.0)) > 0.5) {
+        vec2 a = floor((p - vec2(232.0, 145.0)) / 2.0);
+        c = mix(vec3(0.82, 0.43, 0.29), vec3(0.39, 0.32, 0.49), step(6.0, a.y));
+        rect(c, a, vec4(19.0, 4.0, 23.0, 8.0), vec3(0.98, 0.77, 0.40));
+        float hill = 2.0 + floor(sin(a.x * 0.40) * 1.6 + sin(a.x * 0.17 + 1.0));
+        if (a.y <= hill) c = vec3(0.26, 0.36, 0.26);
+        if (a.y < 1.0) c = vec3(0.23, 0.17, 0.13);
+        rect(c, a, vec4(7.0, 2.0, 12.0, 7.0), vec3(0.41, 0.57, 0.27));
+        rect(c, a, vec4(7.0, 5.0, 8.0, 6.0), vec3(0.10, 0.16, 0.10));
+        rect(c, a, vec4(10.0, 5.0, 11.0, 6.0), vec3(0.10, 0.16, 0.10));
+        rect(c, a, vec4(9.0, 3.0, 10.0, 5.0), vec3(0.10, 0.16, 0.10));
+        rect(c, a, vec4(8.0, 2.0, 11.0, 4.0), vec3(0.10, 0.16, 0.10));
+    }
     // Stack of cut wood beside the hearth.
     rect(c, p, vec4(225.0, 26.0, 265.0, 45.0), vec3(0.225, 0.14, 0.12));
     for (int i = 0; i < 3; ++i) {
@@ -631,12 +671,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
     if (opening > 0.5) {
         vec2 f = (p - vec2(161.0, 45.0)) / clamp(uScale, 0.5, 2.0);
-        float a = tongue(f, -9.0, 26.0 + sin(t * 2.4) * 3.0, 7.5, 1.0, t);
-        float b = tongue(f, 0.0, 39.0 + sin(t * 2.1 + 1.0) * 4.0, 9.0, 3.0, t);
-        float d = tongue(f, 10.0, 28.0 + sin(t * 3.0 + 2.0) * 3.0, 7.0, 5.0, t);
+        float surge = 1.0 + fuel * 0.13;
+        float a = livingFlame(f, -9.0, (27.0 + sin(t * 2.1) * 3.0 + sin(t * 4.3) * 1.5) * surge, 7.8, 1.0, t);
+        float b = livingFlame(f, 0.0, (36.0 + sin(t * 1.8 + 1.0) * 4.0 + sin(t * 3.7) * 2.0) * surge, 8.8, 3.0, t);
+        float d = livingFlame(f, 10.0, (28.0 + sin(t * 2.7 + 2.0) * 3.0) * surge, 7.5, 5.0, t);
         float field = max(a, max(b, d));
         if (field > 0.0) {
-            float k = clamp(field / 8.0 + (1.0 - f.y / 40.0) * 0.25, 0.0, 1.0);
+            // Nested gold cores rise through a red-orange outer silhouette.
+            float heat = noise(vec2(f.x * .18, f.y * .13 - t * 1.7));
+            float k = clamp(field / 8.5 + (1.0 - f.y / 42.0) * 0.23 + (heat - .5) * .17, 0.0, .96);
             c = fireColor(k) * (0.48 + 0.52 * min(intensity, 1.3));
         }
         if (p.y < 46.0 && p.y > 40.0) {
@@ -665,7 +708,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     cat(c, p, t);
     float candle = tongue(p - vec2(130.5, 121.0), 0.0, 5.5, 1.6, 0.0, t * 0.5);
     c = mix(c, vec3(1.0, 0.80, 0.40), step(0.0, candle) * box(p, vec4(125.0, 120.0, 136.0, 128.0)));
-    c = mix(c, vec3(0.68, 0.67, 0.59), coffeeSteam(p, t));
+    float fresh = clamp(iInteraction.y, 0.0, 1.0);
+    c = mix(c, vec3(0.72, 0.70, 0.61), coffeeSteam(p, t) * (1.0 + fresh * 1.35));
+    if (fresh > .01) {
+        float coffee = box(p, vec4(77.0, 55.0, 82.0, 56.0));
+        c = mix(c, vec3(0.26, 0.14, 0.08), coffee * fresh);
+    }
     float vignette = 1.0 - 0.16 * clamp(length((p - vec2(160.0, 90.0)) / vec2(180.0, 120.0)), 0.0, 1.0);
     fragColor = vec4(clamp(c * vignette, 0.0, 1.0), 1.0);
 }

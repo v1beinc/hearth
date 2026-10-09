@@ -86,8 +86,8 @@ class NativeMusic:
             self.player = None
 
 
-def choose_audio_file(owner=None):
-    """A native file picker; no browser or separate playback window."""
+def choose_audio_file(owner=None, *, settings=False, save=False):
+    """Native open/save dialog, also used for portable JSON settings."""
     import sys
     if sys.platform == "win32":
         import ctypes as c
@@ -108,16 +108,20 @@ def choose_audio_file(owner=None):
             ]
 
         buffer = c.create_unicode_buffer(32768)
+        if save:
+            buffer.value = "hearth-settings.json"
         dialog = OpenFileName()
         dialog.lStructSize = c.sizeof(dialog)
         dialog.hwndOwner = owner
         dialog.lpstrFile = c.cast(buffer, w.LPWSTR)
         dialog.nMaxFile = len(buffer)
-        dialog.lpstrFilter = "Аудио\0*.mp3;*.wav;*.ogg;*.flac;*.m4a\0Все файлы\0*.*\0\0"
-        dialog.lpstrTitle = "Музыка для тихого вечера"
+        dialog.nFilterIndex = 1
+        dialog.lpstrFilter = "Настройки Hearth\0*.json\0\0" if settings else "Аудио\0*.mp3;*.wav;*.ogg;*.flac;*.m4a\0Все файлы\0*.*\0\0"
+        dialog.lpstrTitle = ("Экспорт настроек" if save else "Импорт настроек") if settings else "Музыка для тихого вечера"
+        dialog.lpstrDefExt = "json" if settings else None
         # Explorer, existing path/file, preserve cwd, don't add private files to Recents.
-        dialog.Flags = 0x80000 | 0x800 | 0x1000 | 0x8 | 0x2000000
-        function = c.windll.comdlg32.GetOpenFileNameW
+        dialog.Flags = 0x80000 | 0x800 | 0x8 | 0x2000000 | (0x2 if save else 0x1000)
+        function = c.windll.comdlg32.GetSaveFileNameW if save else c.windll.comdlg32.GetOpenFileNameW
         function.argtypes = [c.POINTER(OpenFileName)]
         function.restype = w.BOOL
         return Path(buffer.value) if function(c.byref(dialog)) else None
@@ -125,7 +129,11 @@ def choose_audio_file(owner=None):
     root = Tk()
     root.withdraw()
     try:
-        path = filedialog.askopenfilename(title="Музыка для тихого вечера")
+        if settings:
+            function = filedialog.asksaveasfilename if save else filedialog.askopenfilename
+            path = function(title="Настройки Hearth", defaultextension=".json", filetypes=[("Hearth", "*.json")])
+        else:
+            path = filedialog.askopenfilename(title="Музыка для тихого вечера")
         return Path(path) if path else None
     finally:
         root.destroy()
